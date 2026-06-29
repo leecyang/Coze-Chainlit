@@ -1,0 +1,39 @@
+<svg id="图层_1" data-name="图层 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 120">
+  <defs>
+    <style>
+      .logo-icon { fill: #9242eb; }
+      .logo-text { 
+        font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif;
+        font-size: 48px;
+        font-weight: bold;
+        fill: #b47af0;
+      }
+    </style>
+  </defs>
+  
+  <!-- 左侧图标 - 缩小版 -->
+  <g transform="translate(10, 10) scale(0.65)">
+    <!-- 外圆环 -->
+    <ellipse cx="76.91" cy="76.91" rx="74" ry="74" 
+             fill="none" stroke="#9242eb" stroke-width="6"/>
+    
+    <!-- 内部图形 - 灵犀形状 -->
+    <path class="logo-icon" d="M45,38 L42,38 L36,85 C36,85 36,85 36,85 
+             C34,87 31,106 44,109 C46,110 47,110 49,110 
+             C54,110 68,108 85,97 L79,87 
+             C79,87 59,98 54,85 C53,83 53,81 53,79 
+             L58,49 C58,49 59,43 55,42 C52,41 48,40 45,38 Z"/>
+    
+    <path class="logo-icon" d="M65,53 L98,104 C98,104 100,108 106,108 
+             L118,107 L85,57 C85,57 80,51 65,53 Z"/>
+    
+    <path class="logo-icon" d="M87,52 C87,52 96,36 111,39 
+             C111,39 120,40 118,53 C118,53 114,70 107,76 
+             C107,76 105,77 104,75 L98,67 
+             C98,67 98,66 98,65 C98,64 99,63 100,61 
+             C100,61 105,45 87,52 Z"/>
+  </g>
+  
+  <!-- 右侧文字 - 淡紫色 -->
+  <text x="120" y="82" class="logo-text">灵犀智学</text>
+</svg>

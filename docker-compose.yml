@@ -1,0 +1,29 @@
+services:
+  chainlit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lingxi-chat
+    ports:
+      - "8123:8000"
+    environment:
+      - CHAINLIT_AUTH_SECRET=${CHAINLIT_AUTH_SECRET}
+      - COZE_JWT_TOKEN=${COZE_JWT_TOKEN}
+      - COZE_BOT_ID=${COZE_BOT_ID}
+      - COZE_BASE_URL=${COZE_BASE_URL:-https://api.coze.cn}
+      - COZE_REDIRECT_URL=${COZE_REDIRECT_URL:-http://localhost:8123/oauth/callback}
+      - COZE_CLIENT_ID=${COZE_CLIENT_ID}
+      - COZE_CLIENT_SECRET=${COZE_CLIENT_SECRET}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-yang}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-lcy@050426}
+    volumes:
+      - ./data:/app/data
+      - ./public:/app/public
+      - ./app.py:/app/app.py
+    restart: unless-stopped
+    networks:
+      - lingxi-network
+
+networks:
+  lingxi-network:
+    driver: bridge
