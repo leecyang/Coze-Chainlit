@@ -201,8 +201,7 @@ elif ADMIN_USERNAME in users_db:
 print(f"[Users] 当前共 {len(users_db)} 个用户")
 
 # ==================== 用户偏好风格 ====================
-# DEFAULT_PERSONA 保留：仍是 chat_stream 未传 target_role 时的兜底变量值
-# （降级单 Bot 模式下旧提示词依赖），也是管理后台会话人设的默认显示。
+# DEFAULT_PERSONA 保留：管理后台会话智能体统计没有记录时的默认显示。
 DEFAULT_PERSONA = "计网专家"
 # preferred_style 只是 ResponseSelector 的偏好权重，不再强制指定人设 Agent。
 # auto 表示完全交给 Router + Selector 自主决定。
@@ -907,10 +906,6 @@ class CozeAPI:
         custom_vars = {"username": user_id}
         if agent_name:
             custom_vars["agent_name"] = agent_name
-        else:
-            # 兼容旧工作流 Bot：练习 Agent 不传 agent_name/target_role，
-            # 这里仍按改造前载荷注入默认 target_role。
-            custom_vars["target_role"] = kwargs.get("target_role", "") or DEFAULT_PERSONA
         # 教学 Agent 附加的任务上下文变量（task_topic / difficulty 等），
         # Coze 容忍提示词中未声明的 custom_variables
         extra_vars = kwargs.get("extra_vars")

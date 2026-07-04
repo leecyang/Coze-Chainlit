@@ -7,9 +7,8 @@
     有效 tool_call_id       -> submit_tool_outputs_stream
     缺 chat_id / 空 id      -> chat_stream 兜底
 
-注意：act() 不传 target_role 与 extra_vars，让 chat_stream 内部的
-DEFAULT_PERSONA 兜底生效——发给已部署工作流 Bot 的 custom_variables
-与改造前逐字节一致，避免影响线上工作流。
+注意：act() 不传 agent_name 与 extra_vars，每日一练工作流只接收
+chat_stream 注入的通用 username 变量。
 
 挂起状态（pending_tool_action）的存取由 pipeline 统一管理：
 续接时 pipeline 把旧 pending 放进 payload 并预先清除，act() 只读

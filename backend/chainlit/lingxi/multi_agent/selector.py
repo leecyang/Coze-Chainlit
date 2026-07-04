@@ -1,7 +1,7 @@
 """ResponseSelector：根据置信度竞价、preferred_style 与上下文选出赢家。
 
 纯模块，不依赖 chainlit。preferred_style 只是权重（加分项），
-不是强制指定——这是与旧 target_role 机制的本质区别。
+不是强制指定——这是与旧固定人设机制的本质区别。
 """
 
 from dataclasses import dataclass, field
