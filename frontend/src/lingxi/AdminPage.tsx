@@ -540,7 +540,7 @@ export default function AdminPage() {
     setAuthorized(auth.is_admin);
     setAdminName(auth.username || '');
     if (!auth.is_admin) return;
-    await Promise.allSettled([
+    const overviewResult = await Promise.allSettled([
       loadOverview(),
       loadUsers(1),
       loadConversations(1),
@@ -550,6 +550,9 @@ export default function AdminPage() {
       loadTopics(),
       loadAudit(1)
     ]);
+    if (overviewResult[0].status === 'rejected') {
+      throw overviewResult[0].reason;
+    }
   };
 
   useEffect(() => {

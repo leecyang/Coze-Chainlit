@@ -2163,12 +2163,13 @@ async def get_admin_stats(request: Request):
 
 
 @app.get("/api/admin/overview")
-async def get_admin_overview(request: Request, range: str = "7d"):
+async def get_admin_overview(request: Request, overview_range: str = "7d"):
     """运营后台总览数据。"""
     if not verify_admin_from_request(request):
         return JSONResponse({"error": "未授权"}, status_code=403)
     _ensure_assignment_records_table()
-    days = {"7d": 7, "30d": 30}.get(range, 7)
+    range_key = (request.query_params.get("range") or overview_range or "7d").strip()
+    days = {"7d": 7, "30d": 30}.get(range_key, 7)
     admin_users = [u for u, d in users_db.items() if d.get("role") == "admin"]
     placeholders = ",".join("?" for _ in admin_users)
     admin_filter = f"AND username NOT IN ({placeholders})" if admin_users else ""
@@ -2290,7 +2291,7 @@ async def get_admin_overview(request: Request, range: str = "7d"):
 
         token_health = await check_token_health()
         return JSONResponse({
-            "range": range,
+            "range": range_key,
             "kpis": {
                 "total_users": total_users,
                 "normal_users": normal_users,

@@ -17,7 +17,7 @@ function mockFetch(
     topics?: unknown;
   } = {}
 ) {
-  vi.mocked(lingxiFetch).mockImplementation((url: string, options?: RequestInit) => {
+  const handler = (url: string, options?: RequestInit) => {
     if (url === '/api/admin/auth/check') {
       return Promise.resolve({ is_admin: true, username: 'yang' });
     }
@@ -78,7 +78,9 @@ function mockFetch(
     }
     if (url.startsWith('/api/admin/audit')) return Promise.resolve(page);
     return Promise.resolve({});
-  });
+  };
+  vi.mocked(lingxiFetch).mockImplementation(handler);
+  return handler;
 }
 
 describe('AdminPage', () => {
@@ -101,6 +103,24 @@ describe('AdminPage', () => {
     expect(await screen.findByText('灵犀管理后台')).toBeTruthy();
     expect(screen.getByText('总用户')).toBeTruthy();
     expect(screen.getByText('暂无趋势数据')).toBeTruthy();
+  });
+
+  it('surfaces overview load failures during initialization', async () => {
+    const handler = mockFetch();
+    vi.mocked(lingxiFetch).mockImplementation((url: string, options?: RequestInit) => {
+      if (url.startsWith('/api/admin/overview')) {
+        return Promise.reject(new Error('总览加载失败'));
+      }
+      return handler(url, options);
+    });
+
+    render(
+      <MemoryRouter>
+        <AdminPage />
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByText('总览加载失败')).toBeTruthy();
   });
 
   it('renders when agent and topic payloads omit array fields', async () => {
