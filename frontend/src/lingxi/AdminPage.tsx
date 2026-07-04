@@ -729,7 +729,7 @@ export default function AdminPage() {
 
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-base">热门人设</CardTitle>
+                  <CardTitle className="text-base">热门智能体</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {(overview?.persona_stats || []).map((item) => (
@@ -743,7 +743,7 @@ export default function AdminPage() {
                       </div>
                     </div>
                   ))}
-                  {!overview?.persona_stats?.length ? <div className="py-10 text-center text-sm text-muted-foreground">暂无人设使用数据</div> : null}
+                  {!overview?.persona_stats?.length ? <div className="py-10 text-center text-sm text-muted-foreground">暂无智能体使用数据</div> : null}
                 </CardContent>
               </Card>
             </section>
@@ -917,10 +917,11 @@ export default function AdminPage() {
                   <Select value={conversationPersona} onValueChange={setConversationPersona}>
                     <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="all">全部人设</SelectItem>
+                      <SelectItem value="all">全部智能体</SelectItem>
                       <SelectItem value="新手小白">新手小白</SelectItem>
                       <SelectItem value="辩论对手">辩论对手</SelectItem>
                       <SelectItem value="计网专家">计网专家</SelectItem>
+                      <SelectItem value="每日一练">每日一练</SelectItem>
                     </SelectContent>
                   </Select>
                   <Button variant="outline" onClick={() => run(() => loadConversations(1))}>查询</Button>
@@ -932,7 +933,7 @@ export default function AdminPage() {
                     <TableRow>
                       <TableHead>标题</TableHead>
                       <TableHead>用户</TableHead>
-                      <TableHead>人设</TableHead>
+                      <TableHead>智能体</TableHead>
                       <TableHead>消息</TableHead>
                       <TableHead>Coze 会话</TableHead>
                       <TableHead>创建时间</TableHead>
@@ -1083,8 +1084,20 @@ export default function AdminPage() {
               <CardContent className="grid gap-4 xl:grid-cols-[1fr_320px]">
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
-                    <Label>Bot ID</Label>
+                    <Label>每日一练 / 回退 Bot ID</Label>
                     <Input value={configDraft.bot_id || ''} onChange={(event) => setConfigDraft({ ...configDraft, bot_id: event.target.value })} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>新手小白 Bot ID</Label>
+                    <Input placeholder="留空则回退到主 Bot ID" value={configDraft.bot_id_novice || ''} onChange={(event) => setConfigDraft({ ...configDraft, bot_id_novice: event.target.value })} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>辩论对手 Bot ID</Label>
+                    <Input placeholder="留空则回退到主 Bot ID" value={configDraft.bot_id_debate || ''} onChange={(event) => setConfigDraft({ ...configDraft, bot_id_debate: event.target.value })} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>计网专家 Bot ID</Label>
+                    <Input placeholder="留空则回退到主 Bot ID" value={configDraft.bot_id_expert || ''} onChange={(event) => setConfigDraft({ ...configDraft, bot_id_expert: event.target.value })} />
                   </div>
                   <div className="space-y-2">
                     <Label>API Base URL</Label>

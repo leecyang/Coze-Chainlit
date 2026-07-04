@@ -28,6 +28,7 @@ export async function lingxiFetch<T>(
 }
 
 export type TargetRole = '新手小白' | '辩论对手' | '计网专家';
+export type PreferredStyle = 'auto' | 'novice' | 'debate' | 'expert';
 
 export type LeaderboardEntry = {
   rank?: number;
@@ -98,6 +99,9 @@ export type AdminOverview = {
 
 export type AdminConfig = {
   bot_id?: string;
+  bot_id_novice?: string;
+  bot_id_debate?: string;
+  bot_id_expert?: string;
   base_url?: string;
   jwt_expires_at?: number | null;
   has_service_token?: boolean;
