@@ -7,6 +7,9 @@ from typing import Set
 
 ACTIVE_CONFIG_KEYS: Set[str] = {
     "COZE_BOT_ID",
+    "COZE_BOT_ID_NOVICE",
+    "COZE_BOT_ID_DEBATE",
+    "COZE_BOT_ID_EXPERT",
     "COZE_JWT_TOKEN",
     "COZE_JWT_EXPIRES_AT",
     "COZE_BASE_URL",

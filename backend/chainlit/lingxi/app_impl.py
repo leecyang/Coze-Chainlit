@@ -22,6 +22,9 @@ from starlette.responses import JSONResponse as StarletteJSONResponse
 
 from .settings import ACTIVE_CONFIG_KEYS, resolve_db_path
 from .tokens import build_token_health
+from .multi_agent.base import AgentDeps, SESSION_AGENT_CONVERSATIONS, SESSION_AGENT_STATE
+from .multi_agent.pipeline import MultiAgentPipeline
+from .multi_agent.practice_agent import DailyPracticeAgent
 
 # Load environment variables
 load_dotenv()
@@ -46,6 +49,12 @@ def get_data_layer():
 COZE_BOT_ID = os.getenv("COZE_BOT_ID")
 COZE_BASE_URL = os.getenv("COZE_BASE_URL", "https://api.coze.cn")
 
+# 多智能体：各教学 Agent 的专属 Coze Bot（留空则回退到 COZE_BOT_ID）
+# COZE_BOT_ID 本身保留给每日一练工作流 Bot（Daily_Practice_Agent）
+COZE_BOT_ID_NOVICE = os.getenv("COZE_BOT_ID_NOVICE", "")
+COZE_BOT_ID_DEBATE = os.getenv("COZE_BOT_ID_DEBATE", "")
+COZE_BOT_ID_EXPERT = os.getenv("COZE_BOT_ID_EXPERT", "")
+
 # JWT Service Account Configuration (for production)
 COZE_JWT_TOKEN = os.getenv("COZE_JWT_TOKEN")
 COZE_JWT_EXPIRES_AT = os.getenv("COZE_JWT_EXPIRES_AT")  # Timestamp when JWT expires
@@ -65,10 +74,32 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin")
 # Configuration storage for runtime updates
 config_storage = {
     "COZE_BOT_ID": COZE_BOT_ID,
+    "COZE_BOT_ID_NOVICE": COZE_BOT_ID_NOVICE,
+    "COZE_BOT_ID_DEBATE": COZE_BOT_ID_DEBATE,
+    "COZE_BOT_ID_EXPERT": COZE_BOT_ID_EXPERT,
     "COZE_JWT_TOKEN": COZE_JWT_TOKEN,
     "COZE_JWT_EXPIRES_AT": COZE_JWT_EXPIRES_AT,
     "COZE_BASE_URL": COZE_BASE_URL,
 }
+
+OPTIONAL_AGENT_BOT_KEYS = {
+    "COZE_BOT_ID_NOVICE",
+    "COZE_BOT_ID_DEBATE",
+    "COZE_BOT_ID_EXPERT",
+}
+
+
+def get_agent_bot_id(key: str) -> str:
+    """解析某个 Agent 的 Coze Bot ID。
+
+    调用时读取 config_storage（管理后台 PUT /api/admin/config 或 /model
+    命令的改动即时生效）；对应键为空时回退到主 COZE_BOT_ID，
+    保证未创建专属 Bot 前系统以单 Bot 降级模式照常工作。
+    """
+    value = (config_storage.get(key) or "").strip()
+    if value:
+        return value
+    return (config_storage.get("COZE_BOT_ID") or "").strip()
 
 
 # ==================== 用户持久化 ====================
@@ -169,11 +200,16 @@ elif ADMIN_USERNAME in users_db:
     _save_user_to_db(ADMIN_USERNAME, ADMIN_PASSWORD, "admin")
 print(f"[Users] 当前共 {len(users_db)} 个用户")
 
-# ==================== 用户人设选择 ====================
-# 默认人设：当用户未主动选择任何人设时，自动使用此默认值
+# ==================== 用户偏好风格 ====================
+# DEFAULT_PERSONA 保留：仍是 chat_stream 未传 target_role 时的兜底变量值
+# （降级单 Bot 模式下旧提示词依赖），也是管理后台会话人设的默认显示。
 DEFAULT_PERSONA = "计网专家"
-# 存储每个用户选定的对话人设（target_role），键为用户名
-user_target_roles: Dict[str, str] = {}
+# preferred_style 只是 ResponseSelector 的偏好权重，不再强制指定人设 Agent。
+# auto 表示完全交给 Router + Selector 自主决定。
+DEFAULT_PREFERRED_STYLE = "auto"
+VALID_PREFERRED_STYLES = ("auto", "novice", "debate", "expert")
+# 存储每个用户的偏好风格，键为用户名（内存态）
+user_preferred_styles: Dict[str, str] = {}
 
 
 def _ensure_persona_usage_table():
@@ -361,7 +397,7 @@ def _load_config_from_db():
         cursor = conn.execute('SELECT key, value FROM app_config')
         for row in cursor:
             key, value = row
-            if key in ACTIVE_CONFIG_KEYS and value:  # 仅当数据库中有非空值时才覆盖
+            if key in ACTIVE_CONFIG_KEYS and (value or key in OPTIONAL_AGENT_BOT_KEYS):
                 config_storage[key] = value
                 loaded += 1
         conn.close()
@@ -512,13 +548,14 @@ class AdminRouteMiddleware(BaseHTTPMiddleware):
                 "username": admin_username or ""
             })
 
-        # 拦截 GET /api/target-role 请求
-        if method == "GET" and path == "/api/target-role":
+        # 拦截 GET /api/preferred-style 请求
+        # （Chainlit 兜底路由会遮蔽后注册的自定义 GET 路由，必须在中间件应答）
+        if method == "GET" and path == "/api/preferred-style":
             username = verify_user_from_request(request)
             if not username:
-                return StarletteJSONResponse({"target_role": ""}, status_code=401)
-            current_role = user_target_roles.get(username, "") or DEFAULT_PERSONA
-            return StarletteJSONResponse({"target_role": current_role})
+                return StarletteJSONResponse({"preferred_style": ""}, status_code=401)
+            style = user_preferred_styles.get(username) or DEFAULT_PREFERRED_STYLE
+            return StarletteJSONResponse({"preferred_style": style})
 
         return await call_next(request)
 
@@ -867,12 +904,18 @@ class CozeAPI:
             params["conversation_id"] = conversation_id
 
         # 从 kwargs 中获取可选的 target_role，未选择时使用默认人设
+        # （练习 Agent 不传该参数，保持发给旧工作流 Bot 的载荷与改造前一致）
         target_role = kwargs.get("target_role", "") or DEFAULT_PERSONA
 
         custom_vars = {
             "username": user_id,
             "target_role": target_role
         }
+        # 教学 Agent 附加的任务上下文变量（task_topic / difficulty 等），
+        # Coze 容忍提示词中未声明的 custom_variables
+        extra_vars = kwargs.get("extra_vars")
+        if extra_vars:
+            custom_vars.update(extra_vars)
 
         payload = {
             "bot_id": self.bot_id,
@@ -1136,6 +1179,34 @@ class CozeAPI:
         return []
 
 
+# ==================== 多智能体管线 ====================
+# 订阅-发布式多智能体系统的宿主接入点：
+# 依赖全部在此注入，multi_agent 包不反向 import 本模块。
+_pipeline: Optional[MultiAgentPipeline] = None
+
+
+def _register_agent_conversation(conversation_id: str, username: str) -> None:
+    """Agent 惰性创建 Coze 会话后登记映射（Coze 工作流 HTTP 回调依赖）"""
+    conversation_user_map[conversation_id] = username
+    _save_conversation_map_to_db(conversation_id, username)
+
+
+def _get_pipeline() -> MultiAgentPipeline:
+    global _pipeline
+    if _pipeline is None:
+        _pipeline = MultiAgentPipeline(
+            AgentDeps(
+                coze_factory=CozeAPI,
+                get_token=get_valid_token,
+                register_conversation=_register_agent_conversation,
+                get_bot_id=get_agent_bot_id,
+                log_usage=log_persona_usage,
+            ),
+            DB_PATH,
+        )
+    return _pipeline
+
+
 @cl.on_chat_start
 async def on_chat_start():
     """Initialize chat session"""
@@ -1154,30 +1225,16 @@ async def on_chat_start():
     cl.user_session.set("username", username)
     cl.user_session.set("role", role)
 
-    # Get valid auth token (will refresh if expired)
-    auth_token = await get_valid_token(username)
-
-    # Initialize Coze API client
-    coze = CozeAPI(auth_token, COZE_BOT_ID)
-    cl.user_session.set("coze", coze)
-
-    # Create a new conversation
-    conversation_id = await coze.create_conversation()
-    if conversation_id:
-        cl.user_session.set("conversation_id", conversation_id)
-        conversation_user_map[conversation_id] = username  # 记录映射供工作流回调
-        _save_conversation_map_to_db(conversation_id, username)
-        print(f"[Coze API] Created conversation: {conversation_id}, mapped to user: {username}")
-        
-        # ★ 修复：新建对话时自动记录用户当前选择的人设
-        # 用户在上一段对话结束后，选择器里的人设依然保留。
-        # 如果用户不手动更换直接开始新对话，我们需要主动记录这个已选择的人设。
-        # 如果用户什么都没选，则自动使用默认人设。
-        current_target_role = user_target_roles.get(username, "") or DEFAULT_PERSONA
-        log_persona_usage(username, current_target_role, conversation_id)
-        print(f"[Persona] New chat started, auto-logged persona: {current_target_role}")
-    else:
-        print("[Coze API] Failed to create conversation")
+    # 多智能体：不再急切创建 Coze 会话——各 Agent 在首次响应时
+    # 惰性创建自己的会话并登记 conversation_user_map。
+    # 这些 session 键都是 JSON 可序列化的，Chainlit 会经 thread metadata
+    # 自动持久化并在恢复会话时还原。
+    cl.user_session.set(SESSION_AGENT_CONVERSATIONS, {})
+    cl.user_session.set(SESSION_AGENT_STATE, {})
+    cl.user_session.set("last_agent", None)
+    cl.user_session.set("last_topic", None)
+    cl.user_session.set("recent_history", [])
+    print(f"[MultiAgent] New chat session initialized for user: {username}")
 
     # 欢迎消息已移除
 
@@ -1205,32 +1262,57 @@ async def on_chat_resume(thread):
     cl.user_session.set("username", username)
     cl.user_session.set("role", role)
 
-    # Get valid auth token (will refresh if expired)
-    auth_token = await get_valid_token(username)
-
-    coze = CozeAPI(auth_token, COZE_BOT_ID)
-    cl.user_session.set("coze", coze)
-
-    conversation_id = None
-    # 安全地获取 thread metadata，处理 thread 可能是字典的情况
+    # 安全地获取 thread metadata，处理 thread 可能是字典/字符串的情况
     thread_metadata = None
     if isinstance(thread, dict):
         thread_metadata = thread.get("metadata")
     else:
         thread_metadata = getattr(thread, "metadata", None)
+    if isinstance(thread_metadata, str):
+        try:
+            thread_metadata = json.loads(thread_metadata)
+        except Exception:
+            thread_metadata = None
+    if not isinstance(thread_metadata, dict):
+        thread_metadata = {}
 
-    if thread_metadata and isinstance(thread_metadata, dict) and "conversation_id" in thread_metadata:
-        conversation_id = thread_metadata.get("conversation_id")
+    # 多智能体会话映射：Chainlit 已把 thread metadata 整体还原进 user_session
+    #（backend/chainlit/socket.py resume_thread），这里只做旧结构迁移和映射重登记。
+    agent_conversations = cl.user_session.get(SESSION_AGENT_CONVERSATIONS)
+    if not isinstance(agent_conversations, dict):
+        agent_conversations = {}
 
-    if not conversation_id:
-        print(f"[Coze API] No conversation_id found in thread metadata, creating new conversation")
-        conversation_id = await coze.create_conversation()
+    # 旧版单会话线程：把遗留 conversation_id 迁移给每日一练 Agent
+    #（旧会话中可能有挂起的练习工作流，必须归属该 Agent 才能续接）
+    legacy_conversation_id = thread_metadata.get("conversation_id") or cl.user_session.get("conversation_id")
+    if not agent_conversations and legacy_conversation_id:
+        agent_conversations[DailyPracticeAgent.name] = legacy_conversation_id
+        print(f"[MultiAgent] Migrated legacy conversation {legacy_conversation_id} to {DailyPracticeAgent.name}")
+    cl.user_session.set(SESSION_AGENT_CONVERSATIONS, agent_conversations)
 
-    if conversation_id:
-        cl.user_session.set("conversation_id", conversation_id)
-        conversation_user_map[conversation_id] = username  # 记录映射供工作流回调
-        _save_conversation_map_to_db(conversation_id, username)
-        print(f"[Coze API] Resumed with conversation_id: {conversation_id}, mapped to user: {username}")
+    # 重新登记所有 Agent 会话映射（Coze 工作流 HTTP 回调解析用户名依赖）
+    for conv_id in agent_conversations.values():
+        if conv_id:
+            conversation_user_map[conv_id] = username
+            _save_conversation_map_to_db(conv_id, username)
+    if agent_conversations:
+        print(f"[MultiAgent] Resumed agent conversations: {agent_conversations}")
+
+    # 旧版挂起状态迁移：session["pending_tool_action"] -> agent_state[练习 Agent]
+    agent_state = cl.user_session.get(SESSION_AGENT_STATE)
+    if not isinstance(agent_state, dict):
+        agent_state = {}
+    legacy_pending = cl.user_session.get("pending_tool_action")
+    if legacy_pending and not (agent_state.get(DailyPracticeAgent.name) or {}).get("pending_tool_action"):
+        practice_state = agent_state.get(DailyPracticeAgent.name) or {}
+        practice_state["pending_tool_action"] = legacy_pending
+        agent_state[DailyPracticeAgent.name] = practice_state
+        cl.user_session.set("pending_tool_action", None)
+        print("[MultiAgent] Migrated legacy pending_tool_action to practice agent state")
+    cl.user_session.set(SESSION_AGENT_STATE, agent_state)
+
+    if cl.user_session.get("recent_history") is None:
+        cl.user_session.set("recent_history", [])
 
     # 调试：打印历史消息信息
     # 安全地获取 steps，处理 thread 可能是字典的情况
@@ -1305,123 +1387,24 @@ async def on_message(message: cl.Message):
         await configure_model()
         return
 
-    # Get Coze client and conversation_id
-    coze = cl.user_session.get("coze")
-    conversation_id = cl.user_session.get("conversation_id")
-
-    if not coze:
-        # Re-initialize if not exists, get valid token (will refresh if expired)
-        auth_token = await get_valid_token(username)
-        coze = CozeAPI(auth_token, COZE_BOT_ID)
-        cl.user_session.set("coze", coze)
-
-    if not conversation_id:
-        # Create new conversation if not exists
-        conversation_id = await coze.create_conversation()
-        if conversation_id:
-            cl.user_session.set("conversation_id", conversation_id)
-            current_thread = cl.user_session.get("current_thread")
-            if current_thread and hasattr(current_thread, 'metadata'):
-                if current_thread.metadata is None:
-                    current_thread.metadata = {}
-                current_thread.metadata["conversation_id"] = conversation_id
-        else:
-            await cl.Message(content="❌ 无法创建对话，请检查 API 配置。").send()
-            return
-
-    # Send message and get response with streaming
+    # ========== 多智能体管线 ==========
+    # MessageNormalizer 标准化 → Router 判定任务型 topic → MessageBus 发布
+    # → Subagent 竞价（独占 topic 直达）→ ResponseSelector 选赢家 → 流式生成。
+    # 练习工作流挂起（requires_action）时续接优先，退出词可打断。
     msg = cl.Message(content="")
     await msg.send()
 
-    # ★ 获取当前用户选择的对话人设（需要应用到所有请求），未选择时使用默认人设
-    current_target_role = user_target_roles.get(username, "") or DEFAULT_PERSONA
-    log_persona_usage(username, current_target_role, conversation_id)
+    preferred_style = user_preferred_styles.get(username) or DEFAULT_PREFERRED_STYLE
+    try:
+        thread_id = cl.context.session.thread_id
+    except Exception:
+        thread_id = None
 
-    # ★ 检查 session 中是否有挂起的工作流问答节点（requires_action）
-    # 如果有，说明上一条消息触发了工作流问答节点并进入了挂起状态，
-    # 此时用户的回复需要根据 tool_call 类型来区分处理方式。
-    pending_action = cl.user_session.get("pending_tool_action")
-    print(f"[on_message] user={username}, conversation_id={conversation_id}, "
-          f"pending_action={'YES' if pending_action else 'NO'}, "
-          f"target_role={current_target_role or 'None'}, "
+    print(f"[on_message] user={username}, preferred_style={preferred_style}, "
           f"message={message.content[:50]}...")
 
-    if pending_action:
-        # ========== 续接模式：根据 tool_call 类型选择续接方式 ==========
-        pending_chat_id = pending_action.get("chat_id")
-        pending_tool_calls = pending_action.get("tool_calls", [])
-        pending_conv_id = pending_action.get("conversation_id") or conversation_id
-
-        first_tool_call = pending_tool_calls[0] if pending_tool_calls else {}
-        tool_call_type = first_tool_call.get("type", "unknown")
-        tool_call_id = first_tool_call.get("id", "")
-
-        print(f"[Coze] pending_action: type={tool_call_type}, "
-              f"chat_id={pending_chat_id}, tool_call_id='{tool_call_id}'")
-
-        # 清除挂起状态
-        cl.user_session.set("pending_tool_action", None)
-
-        if not pending_chat_id:
-            # chat_id 缺失，回退到普通对话
-            result = await coze.chat_stream(conversation_id, username, message.content, msg, target_role=current_target_role)
-
-        elif tool_call_type == "reply_message":
-            # ★ reply_message 类型：chatflow 问答节点
-            # Coze 流式 API 已知问题：reply_message 的 tool_call_id 始终为空，
-            # 导致 submit_tool_outputs 无法使用 (code=4000)。
-            # 解决方案：直接用 chat_stream 在同一 conversation 中发送用户回答，
-            # Coze 会自动续接未完成的工作流。
-            print(f"[Coze] reply_message: using chat_stream to continue workflow")
-            result = await coze.chat_stream(
-                pending_conv_id, username, message.content, msg, target_role=current_target_role
-            )
-
-        elif tool_call_id:
-            # function 类型或其他有有效 tool_call_id 的类型
-            tool_outputs = [{
-                "tool_call_id": tc.get("id", ""),
-                "output": str(message.content)
-            } for tc in pending_tool_calls]
-
-            print(f"[Coze] submit_tool_outputs: type={tool_call_type}, "
-                  f"chat_id={pending_chat_id}")
-            result = await coze.submit_tool_outputs_stream(
-                conversation_id=pending_conv_id,
-                chat_id=pending_chat_id,
-                tool_outputs=tool_outputs,
-                msg=msg
-            )
-
-        else:
-            # tool_call_id 为空的其他类型，回退到 chat_stream
-            print(f"[Coze] empty tool_call_id for type={tool_call_type}, "
-                  f"falling back to chat_stream")
-            result = await coze.chat_stream(
-                pending_conv_id, username, message.content, msg, target_role=current_target_role
-            )
-    else:
-        # ========== 普通模式：发起新的对话 ==========
-        result = await coze.chat_stream(conversation_id, username, message.content, msg, target_role=current_target_role)
-
-    # 统一处理结果
-    response_content = result.get("content") if isinstance(result, dict) else result
-    requires_action = result.get("requires_action") if isinstance(result, dict) else None
-
-    if requires_action:
-        cl.user_session.set("pending_tool_action", requires_action)
-        print(f"[Coze] saved pending_tool_action: type={requires_action.get('tool_calls', [{}])[0].get('type', 'N/A')}, "
-              f"chat_id={requires_action.get('chat_id')}")
-    else:
-        cl.user_session.set("pending_tool_action", None)
-
-    if not response_content:
-        # 只有在没有收到响应时才需要处理错误
-        error_msg = "抱歉，我没有收到有效的回复。请检查 Coze API Key 和 Bot ID 配置是否正确。"
-        await msg.stream_token(error_msg)
-        msg.content = error_msg
-        # 错误情况下需要调用 update() 来持久化错误消息
-        await msg.update()
+    # 注意：传原文 message.content（上面的小写 content 只用于命令匹配）
+    await _get_pipeline().handle(username, message.content, thread_id, preferred_style, msg)
 
 
 async def show_help(role: str):
@@ -1832,10 +1815,8 @@ async def configure_model():
     config_storage["COZE_BOT_ID"] = new_bot_id
     _save_config_to_db("COZE_JWT_TOKEN", new_jwt_token)
     _save_config_to_db("COZE_BOT_ID", new_bot_id)
-
-    # Reinitialize Coze client with new token
-    coze = CozeAPI(new_jwt_token, new_bot_id)
-    cl.user_session.set("coze", coze)
+    # 多智能体模式下各 Agent 每轮通过 get_agent_bot_id 读取 config_storage，
+    # 无需重建任何客户端实例。
 
     # 显示更新摘要
     changes = []
@@ -1843,12 +1824,15 @@ async def configure_model():
         changes.append("Service Identity Token")
     if bot_changed:
         changes.append("Bot ID")
-    
+
     await cl.Message(
         content=f"✅ **模型参数配置成功！**\n\n"
                 f"已更新：{', '.join(changes)}\n"
                 f"Service Identity Token: {'*' * 10}\n"
                 f"Bot ID: {new_bot_id}\n\n"
+                f"说明：此 Bot ID 供「每日一练」工作流使用，同时也是"
+                f"未单独配置专属 Bot 的教学智能体的回退 Bot。"
+                f"各教学智能体的专属 Bot ID 请在管理后台的系统配置页设置。\n\n"
                 f"新的配置已生效。"
     ).send()
 
@@ -1863,35 +1847,40 @@ async def check_admin_auth(request: Request):
     })
 
 
-@app.post("/api/target-role")
-async def set_target_role(request: Request):
-    """设置当前用户的对话人设（供前端调用）"""
+@app.post("/api/preferred-style")
+async def set_preferred_style(request: Request):
+    """设置当前用户的偏好交互风格（供前端调用）
+
+    preferred_style 只是 ResponseSelector 的选择权重，不强制指定人设 Agent。
+    """
     username = verify_user_from_request(request)
     if not username:
         return JSONResponse({"error": "未登录"}, status_code=401)
     try:
         body = await request.json()
-        target_role = body.get("target_role", "")
-        # 验证人设值是否合法
-        valid_roles = ["新手小白", "辩论对手", "计网专家"]
-        if target_role not in valid_roles:
-            return JSONResponse({"error": "无效的人设选择"}, status_code=400)
-        user_target_roles[username] = target_role
-        print(f"[TargetRole] 用户 {username} 设置人设: '{target_role}'")
-        return JSONResponse({"success": True, "target_role": target_role})
+        preferred_style = body.get("preferred_style", "")
+        if preferred_style not in VALID_PREFERRED_STYLES:
+            return JSONResponse({"error": "无效的风格选择"}, status_code=400)
+        user_preferred_styles[username] = preferred_style
+        print(f"[PreferredStyle] 用户 {username} 设置偏好风格: '{preferred_style}'")
+        return JSONResponse({"success": True, "preferred_style": preferred_style})
     except Exception as e:
-        print(f"[TargetRole] 设置失败: {e}")
+        print(f"[PreferredStyle] 设置失败: {e}")
         return JSONResponse({"error": "设置失败"}, status_code=500)
 
 
-@app.get("/api/target-role")
-async def get_target_role(request: Request):
-    """获取当前用户的对话人设（供前端调用）"""
+@app.get("/api/preferred-style")
+async def get_preferred_style(request: Request):
+    """获取当前用户的偏好交互风格（供前端调用）
+
+    注意：GET 请求实际由 AdminRouteMiddleware 拦截应答（Chainlit 兜底路由
+    会遮蔽此路由），此处保留作为接口文档与 POST 的对称定义。
+    """
     username = verify_user_from_request(request)
     if not username:
-        return JSONResponse({"target_role": ""}, status_code=401)
-    current_role = user_target_roles.get(username, "") or DEFAULT_PERSONA
-    return JSONResponse({"target_role": current_role})
+        return JSONResponse({"preferred_style": ""}, status_code=401)
+    style = user_preferred_styles.get(username) or DEFAULT_PREFERRED_STYLE
+    return JSONResponse({"preferred_style": style})
 
 
 @app.get("/api/admin/stats")
@@ -2816,6 +2805,9 @@ async def get_admin_config(request: Request):
     
     return JSONResponse({
         "bot_id": COZE_BOT_ID,
+        "bot_id_novice": config_storage.get("COZE_BOT_ID_NOVICE") or "",
+        "bot_id_debate": config_storage.get("COZE_BOT_ID_DEBATE") or "",
+        "bot_id_expert": config_storage.get("COZE_BOT_ID_EXPERT") or "",
         "has_service_token": bool(COZE_JWT_TOKEN),
         "masked_service_token": _mask_secret(COZE_JWT_TOKEN),
         "jwt_expires_at": jwt_expires_at,
@@ -2837,7 +2829,18 @@ async def update_admin_config(request: Request):
             COZE_BOT_ID = body["bot_id"]
             config_storage["COZE_BOT_ID"] = body["bot_id"]
             _save_config_to_db("COZE_BOT_ID", body["bot_id"])
-        
+
+        # 各教学智能体的专属 Bot ID（允许清空以回退到主 Bot ID）
+        for field, config_key in (
+            ("bot_id_novice", "COZE_BOT_ID_NOVICE"),
+            ("bot_id_debate", "COZE_BOT_ID_DEBATE"),
+            ("bot_id_expert", "COZE_BOT_ID_EXPERT"),
+        ):
+            if field in body:
+                value = (body.get(field) or "").strip()
+                config_storage[config_key] = value
+                _save_config_to_db(config_key, value)
+
         # 接受 service_token（前端发送的字段名）
         if body.get("service_token"):
             COZE_JWT_TOKEN = body["service_token"]
@@ -2855,7 +2858,10 @@ async def update_admin_config(request: Request):
             _save_config_to_db("COZE_BASE_URL", body["base_url"])
 
         changed = [
-            key for key in ("bot_id", "service_token", "jwt_expires_at", "base_url")
+            key for key in (
+                "bot_id", "bot_id_novice", "bot_id_debate", "bot_id_expert",
+                "service_token", "jwt_expires_at", "base_url",
+            )
             if key in body and (key != "service_token" or body.get("service_token"))
         ]
         log_admin_activity(actor, "更新系统配置", "app_config", ",".join(changed))
@@ -4461,7 +4467,12 @@ def _reorder_admin_routes():
     for route in app.routes:
         if isinstance(route, Route) and hasattr(route, 'path'):
             path = route.path
-            if path.startswith("/admin") or path.startswith("/api/admin") or path.startswith("/v1/"):
+            if (
+                path.startswith("/admin")
+                or path.startswith("/api/admin")
+                or path.startswith("/v1/")
+                or path.startswith("/api/coze")
+            ):
                 admin_routes.append(route)
                 continue
         other_routes.append(route)

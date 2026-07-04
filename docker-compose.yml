@@ -12,6 +12,9 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
       COZE_BASE_URL: ${COZE_BASE_URL:-https://api.coze.cn}
       COZE_BOT_ID: ${COZE_BOT_ID:-}
+      COZE_BOT_ID_NOVICE: ${COZE_BOT_ID_NOVICE:-}
+      COZE_BOT_ID_DEBATE: ${COZE_BOT_ID_DEBATE:-}
+      COZE_BOT_ID_EXPERT: ${COZE_BOT_ID_EXPERT:-}
       COZE_JWT_TOKEN: ${COZE_JWT_TOKEN:-}
       COZE_JWT_EXPIRES_AT: ${COZE_JWT_EXPIRES_AT:-}
       LINGXI_DB_PATH: /app/backend/data/chainlit.db
