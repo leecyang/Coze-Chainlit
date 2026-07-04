@@ -21,6 +21,7 @@ import chainlit as cl
 
 from .base import BaseAgent
 from .message import Message, TOPIC_PRACTICE_ANSWER, TOPIC_PRACTICE_REQUEST
+from .registry import AgentConfig
 
 
 class DailyPracticeAgent(BaseAgent):
@@ -28,6 +29,14 @@ class DailyPracticeAgent(BaseAgent):
     display_name = "每日一练"
     bot_env_key = "COZE_BOT_ID"  # 现有 Bot：每日一练工作流所在
     subscribed_topics = (TOPIC_PRACTICE_REQUEST, TOPIC_PRACTICE_ANSWER)
+
+    def __init__(self, deps, config: AgentConfig | None = None) -> None:
+        super().__init__(deps)
+        if config:
+            self.name = config.agent_id
+            self.display_name = config.display_name
+            self.bot_id_override = config.bot_id
+            self.subscribed_topics = tuple(config.subscriptions.keys()) or self.subscribed_topics
 
     async def act(self, msg: Message, cl_msg: "cl.Message") -> Dict[str, Any]:
         username = msg.payload.get("username", "unknown")

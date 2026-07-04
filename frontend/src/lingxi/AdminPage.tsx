@@ -2,9 +2,11 @@ import {
   Activity,
   BarChart3,
   BookOpen,
+  Bot,
   CheckCircle2,
   Eye,
   FileText,
+  GitBranch,
   KeyRound,
   Loader2,
   MessageSquareText,
@@ -33,6 +35,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Dialog,
   DialogContent,
@@ -59,8 +62,13 @@ import {
   TableRow
 } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Textarea } from '@/components/ui/textarea';
+import { Switch } from '@/components/ui/switch';
 
 import {
+  AgentDefinition,
+  AgentSubscription,
+  AgentsPayload,
   AdminActivity,
   AdminAssignment,
   AdminConfig,
@@ -73,6 +81,8 @@ import {
   AdminUserDetail,
   LeaderboardEntry,
   Paginated,
+  RouteTopic,
+  TopicsPayload,
   lingxiFetch
 } from './api';
 
@@ -105,6 +115,42 @@ type CsvPreviewRow = {
   line: number;
   error?: string;
 };
+
+const emptyAgentsPayload: AgentsPayload = { agents: [], topics: [] };
+const emptyTopicsPayload: TopicsPayload = {
+  topics: [],
+  keywords: { topic: {}, practice: {}, global: {} },
+  settings: {}
+};
+
+function makeBlankAgent(): AgentDefinition {
+  return {
+    agent_id: '',
+    display_name: '',
+    description: '',
+    agent_type: 'coze_chat',
+    bot_id: '',
+    enabled: true,
+    system_builtin: false,
+    locked: false,
+    exclusive: false,
+    priority: 100,
+    context_policy: 'on_switch_recent_2',
+    subscription_count: 0,
+    subscriptions: []
+  };
+}
+
+function splitWords(value: string): string[] {
+  return value
+    .split(/[\n,，]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function joinWords(value?: string[]) {
+  return (value || []).join('\n');
+}
 
 const pageSize = 12;
 const emptyLeaderboardStats = {
@@ -279,6 +325,12 @@ export default function AdminPage() {
 
   const [config, setConfig] = useState<AdminConfig>({});
   const [configDraft, setConfigDraft] = useState<AdminConfig>({});
+  const [agentsPayload, setAgentsPayload] = useState<AgentsPayload>(emptyAgentsPayload);
+  const [topicsPayload, setTopicsPayload] = useState<TopicsPayload>(emptyTopicsPayload);
+  const [selectedAgentId, setSelectedAgentId] = useState('');
+  const [agentDraft, setAgentDraft] = useState<AgentDefinition>(makeBlankAgent());
+  const [subscriptionDraft, setSubscriptionDraft] = useState<Record<string, AgentSubscription>>({});
+  const [newTopic, setNewTopic] = useState({ topic: '', display_name: '', description: '' });
   const [audit, setAudit] = useState<Paginated<AdminActivity>>({
     items: [],
     total: 0,
@@ -299,6 +351,30 @@ export default function AdminPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const applyAgentSelection = (agent: AgentDefinition) => {
+    setSelectedAgentId(agent.agent_id);
+    setAgentDraft({ ...agent, subscriptions: agent.subscriptions || [] });
+    setSubscriptionDraft(
+      Object.fromEntries(
+        (agent.subscriptions || []).map((sub) => [
+          sub.topic,
+          {
+            topic: sub.topic,
+            base_bid: Number(sub.base_bid || 0),
+            basic_bonus: Number(sub.basic_bonus || 0),
+            advanced_bonus: Number(sub.advanced_bonus || 0)
+          }
+        ])
+      )
+    );
+  };
+
+  const startNewAgent = () => {
+    setSelectedAgentId('');
+    setAgentDraft(makeBlankAgent());
+    setSubscriptionDraft({});
   };
 
   const loadOverview = async () => {
@@ -371,6 +447,26 @@ export default function AdminPage() {
     setConfigDraft({ ...data, service_token: '' });
   };
 
+  const loadAgents = async () => {
+    const data = await lingxiFetch<AgentsPayload>('/api/admin/agents');
+    setAgentsPayload(data);
+    const selected = data.agents.find((agent) => agent.agent_id === selectedAgentId) || data.agents[0];
+    if (selected) applyAgentSelection(selected);
+  };
+
+  const loadTopics = async () => {
+    const data = await lingxiFetch<TopicsPayload>('/api/admin/topics');
+    setTopicsPayload({
+      topics: data.topics || [],
+      keywords: {
+        topic: data.keywords?.topic || {},
+        practice: data.keywords?.practice || {},
+        global: data.keywords?.global || {}
+      },
+      settings: data.settings || {}
+    });
+  };
+
   const loadAudit = async (page = audit.page) => {
     const data = await lingxiFetch<Paginated<AdminActivity>>(
       `/api/admin/audit${query({ target: auditTarget, page, page_size: pageSize })}`
@@ -391,6 +487,8 @@ export default function AdminPage() {
       loadConversations(1),
       loadLearning(),
       loadConfig(),
+      loadAgents(),
+      loadTopics(),
       loadAudit(1)
     ]);
   };
@@ -580,6 +678,162 @@ export default function AdminPage() {
     }, '配置已保存');
   };
 
+  const saveAgent = async () => {
+    await run(async () => {
+      const payload = {
+        agent_id: agentDraft.agent_id,
+        display_name: agentDraft.display_name,
+        description: agentDraft.description,
+        agent_type: agentDraft.agent_type,
+        bot_id: agentDraft.bot_id,
+        enabled: agentDraft.enabled,
+        exclusive: agentDraft.exclusive,
+        priority: Number(agentDraft.priority || 100),
+        context_policy: agentDraft.context_policy
+      };
+      const data = await lingxiFetch<AgentsPayload>(
+        selectedAgentId
+          ? `/api/admin/agents/${encodeURIComponent(selectedAgentId)}`
+          : '/api/admin/agents',
+        {
+          method: selectedAgentId ? 'PUT' : 'POST',
+          body: JSON.stringify(payload)
+        }
+      );
+      setAgentsPayload(data);
+      const selected = data.agents.find((agent) => agent.agent_id === payload.agent_id);
+      if (selected) applyAgentSelection(selected);
+      await Promise.all([loadAudit(1), loadOverview()]);
+    }, selectedAgentId ? '智能体已保存' : '智能体已注册');
+  };
+
+  const saveSubscriptions = async () => {
+    if (!selectedAgentId) return;
+    await run(async () => {
+      const data = await lingxiFetch<AgentsPayload>(
+        `/api/admin/agents/${encodeURIComponent(selectedAgentId)}/subscriptions`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ subscriptions: Object.values(subscriptionDraft) })
+        }
+      );
+      setAgentsPayload(data);
+      const selected = data.agents.find((agent) => agent.agent_id === selectedAgentId);
+      if (selected) applyAgentSelection(selected);
+      await Promise.all([loadAudit(1), loadOverview()]);
+    }, '订阅与 bid 表已保存');
+  };
+
+  const deleteAgent = () => {
+    if (!selectedAgentId || agentDraft.system_builtin) return;
+    setConfirm({
+      title: '删除智能体',
+      description: `将删除 ${agentDraft.display_name || selectedAgentId} 以及它的订阅和 bid 表。`,
+      actionLabel: '确认删除',
+      onConfirm: async () => {
+        const data = await lingxiFetch<AgentsPayload>(
+          `/api/admin/agents/${encodeURIComponent(selectedAgentId)}`,
+          { method: 'DELETE' }
+        );
+        setAgentsPayload(data);
+        const selected = data.agents[0];
+        if (selected) applyAgentSelection(selected);
+        else startNewAgent();
+        await Promise.all([loadAudit(1), loadOverview()]);
+      }
+    });
+  };
+
+  const saveTopics = async () => {
+    await run(async () => {
+      const data = await lingxiFetch<TopicsPayload>('/api/admin/topics', {
+        method: 'PUT',
+        body: JSON.stringify(topicsPayload)
+      });
+      setTopicsPayload(data);
+      await Promise.all([loadAgents(), loadAudit(1), loadOverview()]);
+    }, '路由 topic 与词表已保存');
+  };
+
+  const updateTopic = (topic: string, patch: Partial<RouteTopic>) => {
+    setTopicsPayload((previous) => ({
+      ...previous,
+      topics: previous.topics.map((item) =>
+        item.topic === topic ? { ...item, ...patch } : item
+      )
+    }));
+  };
+
+  const updateTopicKeywords = (topic: string, kind: 'strong' | 'weak' | 'pattern', value: string) => {
+    setTopicsPayload((previous) => ({
+      ...previous,
+      keywords: {
+        ...previous.keywords,
+        topic: {
+          ...previous.keywords.topic,
+          [topic]: {
+            ...(previous.keywords.topic[topic] || {}),
+            [kind]: splitWords(value)
+          }
+        }
+      }
+    }));
+  };
+
+  const updatePracticeKeywords = (kind: string, value: string) => {
+    setTopicsPayload((previous) => ({
+      ...previous,
+      keywords: {
+        ...previous.keywords,
+        practice: {
+          ...previous.keywords.practice,
+          [kind]: splitWords(value)
+        }
+      }
+    }));
+  };
+
+  const updateGlobalKeywords = (kind: string, value: string) => {
+    setTopicsPayload((previous) => ({
+      ...previous,
+      keywords: {
+        ...previous.keywords,
+        global: {
+          ...previous.keywords.global,
+          [kind]: splitWords(value)
+        }
+      }
+    }));
+  };
+
+  const addTopicDraft = () => {
+    const topicKey = newTopic.topic.trim();
+    if (!topicKey || topicsPayload.topics.some((item) => item.topic === topicKey)) return;
+    setTopicsPayload((previous) => ({
+      ...previous,
+      topics: [
+        ...previous.topics,
+        {
+          topic: topicKey,
+          display_name: newTopic.display_name.trim() || topicKey,
+          description: newTopic.description.trim(),
+          is_teaching: true,
+          is_exclusive: false,
+          route_priority: 100,
+          enabled: true
+        }
+      ],
+      keywords: {
+        ...previous.keywords,
+        topic: {
+          ...previous.keywords.topic,
+          [topicKey]: { strong: [], weak: [], pattern: [] }
+        }
+      }
+    }));
+    setNewTopic({ topic: '', display_name: '', description: '' });
+  };
+
   const testConnection = async () => {
     await run(async () => {
       const data = await lingxiFetch<{ success: boolean; message: string }>(
@@ -673,6 +927,7 @@ export default function AdminPage() {
             <TabsTrigger value="users">用户</TabsTrigger>
             <TabsTrigger value="conversations">对话</TabsTrigger>
             <TabsTrigger value="learning">学习</TabsTrigger>
+            <TabsTrigger value="agents">智能体</TabsTrigger>
             <TabsTrigger value="config">配置</TabsTrigger>
             <TabsTrigger value="audit">审计</TabsTrigger>
           </TabsList>
@@ -1073,6 +1328,372 @@ export default function AdminPage() {
             </Card>
           </TabsContent>
 
+          <TabsContent value="agents" className="space-y-4">
+            <section className="grid gap-4 xl:grid-cols-[1fr_420px]">
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between gap-3">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Bot className="h-4 w-4" />
+                    智能体列表
+                  </CardTitle>
+                  <Button variant="outline" size="sm" onClick={startNewAgent}>
+                    <UserPlus className="h-4 w-4" />
+                    注册智能体
+                  </Button>
+                </CardHeader>
+                <CardContent>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>状态</TableHead>
+                        <TableHead>Agent</TableHead>
+                        <TableHead>类型</TableHead>
+                        <TableHead>Bot ID</TableHead>
+                        <TableHead>订阅</TableHead>
+                        <TableHead>优先级</TableHead>
+                        <TableHead>最近修改</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {agentsPayload.agents.length ? agentsPayload.agents.map((agent) => (
+                        <TableRow
+                          key={agent.agent_id}
+                          className={selectedAgentId === agent.agent_id ? 'bg-muted/60' : 'cursor-pointer'}
+                          onClick={() => applyAgentSelection(agent)}
+                        >
+                          <TableCell>
+                            <Badge variant={agent.enabled ? 'secondary' : 'outline'}>
+                              {agent.enabled ? '启用' : '停用'}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <div className="font-medium">{agent.display_name}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {agent.agent_id}
+                              {agent.system_builtin ? ' · 系统内置' : ''}
+                            </div>
+                          </TableCell>
+                          <TableCell>{agent.agent_type === 'coze_workflow' ? 'Workflow' : 'Coze Bot'}</TableCell>
+                          <TableCell>{agent.bot_id ? '已配置' : '回退主 Bot'}</TableCell>
+                          <TableCell>{agent.subscription_count}</TableCell>
+                          <TableCell>{agent.priority}</TableCell>
+                          <TableCell>{formatTime(agent.updated_at)}</TableCell>
+                        </TableRow>
+                      )) : <EmptyRow colSpan={7} text="暂无智能体，请先注册" />}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">
+                    {selectedAgentId ? '注册/编辑智能体' : '注册新智能体'}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label>Agent ID</Label>
+                      <Input
+                        disabled={Boolean(selectedAgentId)}
+                        placeholder="Brush_Up_Coach"
+                        value={agentDraft.agent_id}
+                        onChange={(event) => setAgentDraft({ ...agentDraft, agent_id: event.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>中文名称</Label>
+                      <Input
+                        disabled={agentDraft.locked}
+                        placeholder="刷题教练"
+                        value={agentDraft.display_name}
+                        onChange={(event) => setAgentDraft({ ...agentDraft, display_name: event.target.value })}
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>描述</Label>
+                    <Textarea
+                      disabled={agentDraft.locked}
+                      value={agentDraft.description}
+                      onChange={(event) => setAgentDraft({ ...agentDraft, description: event.target.value })}
+                    />
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label>类型</Label>
+                      <Select
+                        disabled={agentDraft.locked}
+                        value={agentDraft.agent_type}
+                        onValueChange={(value) => setAgentDraft({ ...agentDraft, agent_type: value as AgentDefinition['agent_type'] })}
+                      >
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="coze_chat">Coze Bot</SelectItem>
+                          <SelectItem value="coze_workflow">Coze Workflow</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>优先级</Label>
+                      <Input
+                        disabled={agentDraft.locked}
+                        type="number"
+                        value={agentDraft.priority}
+                        onChange={(event) => setAgentDraft({ ...agentDraft, priority: Number(event.target.value) || 100 })}
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Bot ID</Label>
+                    <Input
+                      placeholder="留空则回退到全局主 Bot ID"
+                      value={agentDraft.bot_id}
+                      onChange={(event) => setAgentDraft({ ...agentDraft, bot_id: event.target.value })}
+                    />
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
+                      启用
+                      <Switch
+                        checked={agentDraft.enabled}
+                        onCheckedChange={(checked) => setAgentDraft({ ...agentDraft, enabled: checked })}
+                      />
+                    </label>
+                    <label className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
+                      独占智能体
+                      <Switch
+                        disabled={agentDraft.locked}
+                        checked={agentDraft.exclusive}
+                        onCheckedChange={(checked) => setAgentDraft({ ...agentDraft, exclusive: checked })}
+                      />
+                    </label>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>跨 Agent 上下文策略</Label>
+                    <Select
+                      disabled={agentDraft.locked}
+                      value={agentDraft.context_policy}
+                      onValueChange={(value) => setAgentDraft({ ...agentDraft, context_policy: value as AgentDefinition['context_policy'] })}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="on_switch_recent_2">跨 Agent 切换时注入最近 2 轮</SelectItem>
+                        <SelectItem value="none">不注入上下文</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button className="gap-2" onClick={saveAgent}>
+                      <Save className="h-4 w-4" />
+                      保存智能体
+                    </Button>
+                    <Button variant="outline" onClick={startNewAgent}>清空表单</Button>
+                    <Button
+                      variant="outline"
+                      disabled={!selectedAgentId || agentDraft.system_builtin}
+                      onClick={deleteAgent}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      删除非系统智能体
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </section>
+
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between gap-3">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <GitBranch className="h-4 w-4" />
+                  订阅与 bid 表
+                </CardTitle>
+                <Button
+                  className="gap-2"
+                  disabled={!selectedAgentId || agentDraft.locked}
+                  onClick={saveSubscriptions}
+                >
+                  <Save className="h-4 w-4" />
+                  保存订阅
+                </Button>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>订阅</TableHead>
+                      <TableHead>Topic</TableHead>
+                      <TableHead>基础 bid</TableHead>
+                      <TableHead>基础加成</TableHead>
+                      <TableHead>进阶加成</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {agentsPayload.topics.length ? agentsPayload.topics.map((topic) => {
+                      const sub = subscriptionDraft[topic.topic];
+                      return (
+                        <TableRow key={topic.topic}>
+                          <TableCell>
+                            <Checkbox
+                              disabled={!selectedAgentId || agentDraft.locked}
+                              checked={Boolean(sub)}
+                              onCheckedChange={(checked) => {
+                                setSubscriptionDraft((previous) => {
+                                  const next = { ...previous };
+                                  if (checked === true) {
+                                    next[topic.topic] = next[topic.topic] || {
+                                      topic: topic.topic,
+                                      base_bid: topic.is_exclusive ? 1 : 0.5,
+                                      basic_bonus: 0,
+                                      advanced_bonus: 0
+                                    };
+                                  } else {
+                                    delete next[topic.topic];
+                                  }
+                                  return next;
+                                });
+                              }}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <div className="font-medium">{topic.display_name}</div>
+                            <div className="text-xs text-muted-foreground">{topic.topic}</div>
+                          </TableCell>
+                          {(['base_bid', 'basic_bonus', 'advanced_bonus'] as const).map((field) => (
+                            <TableCell key={field}>
+                              <Input
+                                className="w-28"
+                                disabled={!sub || agentDraft.locked}
+                                type="number"
+                                step="0.05"
+                                value={sub?.[field] ?? ''}
+                                onChange={(event) => {
+                                  const value = Number(event.target.value) || 0;
+                                  setSubscriptionDraft((previous) => ({
+                                    ...previous,
+                                    [topic.topic]: {
+                                      ...(previous[topic.topic] || { topic: topic.topic, base_bid: 0, basic_bonus: 0, advanced_bonus: 0 }),
+                                      [field]: value
+                                    }
+                                  }));
+                                }}
+                              />
+                            </TableCell>
+                          ))}
+                        </TableRow>
+                      );
+                    }) : <EmptyRow colSpan={5} text="暂无 topic，请先维护路由词表" />}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between gap-3">
+                <CardTitle className="text-base">路由词表</CardTitle>
+                <Button className="gap-2" onClick={saveTopics}>
+                  <Save className="h-4 w-4" />
+                  保存路由配置
+                </Button>
+              </CardHeader>
+              <CardContent className="space-y-5">
+                <div className="grid gap-3 rounded-md border p-3 md:grid-cols-[180px_180px_1fr_auto]">
+                  <Input placeholder="topic key" value={newTopic.topic} onChange={(event) => setNewTopic({ ...newTopic, topic: event.target.value })} />
+                  <Input placeholder="中文名称" value={newTopic.display_name} onChange={(event) => setNewTopic({ ...newTopic, display_name: event.target.value })} />
+                  <Input placeholder="描述" value={newTopic.description} onChange={(event) => setNewTopic({ ...newTopic, description: event.target.value })} />
+                  <Button variant="outline" onClick={addTopicDraft}>新增 Topic</Button>
+                </div>
+
+                <div className="space-y-4">
+                  {topicsPayload.topics.map((topic) => {
+                    const groups = topicsPayload.keywords.topic[topic.topic] || {};
+                    return (
+                      <div key={topic.topic} className="rounded-md border p-3">
+                        <div className="grid gap-3 md:grid-cols-[180px_180px_1fr_100px_120px]">
+                          <Input value={topic.topic} disabled />
+                          <Input value={topic.display_name} onChange={(event) => updateTopic(topic.topic, { display_name: event.target.value })} />
+                          <Input value={topic.description} onChange={(event) => updateTopic(topic.topic, { description: event.target.value })} />
+                          <Input type="number" value={topic.route_priority} onChange={(event) => updateTopic(topic.topic, { route_priority: Number(event.target.value) || 100 })} />
+                          <div className="flex items-center justify-end gap-3">
+                            <label className="flex items-center gap-2 text-sm">
+                              教学
+                              <Switch checked={topic.is_teaching} onCheckedChange={(checked) => updateTopic(topic.topic, { is_teaching: checked })} />
+                            </label>
+                            <label className="flex items-center gap-2 text-sm">
+                              启用
+                              <Switch checked={topic.enabled} onCheckedChange={(checked) => updateTopic(topic.topic, { enabled: checked })} />
+                            </label>
+                          </div>
+                        </div>
+                        <div className="mt-3 grid gap-3 md:grid-cols-3">
+                          <div className="space-y-2">
+                            <Label>强关键词</Label>
+                            <Textarea value={joinWords(groups.strong)} onChange={(event) => updateTopicKeywords(topic.topic, 'strong', event.target.value)} />
+                          </div>
+                          <div className="space-y-2">
+                            <Label>弱关键词</Label>
+                            <Textarea value={joinWords(groups.weak)} onChange={(event) => updateTopicKeywords(topic.topic, 'weak', event.target.value)} />
+                          </div>
+                          <div className="space-y-2">
+                            <Label>正则特征</Label>
+                            <Textarea value={joinWords(groups.pattern)} onChange={(event) => updateTopicKeywords(topic.topic, 'pattern', event.target.value)} />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="grid gap-4 xl:grid-cols-3">
+                  <div className="space-y-3 rounded-md border p-3">
+                    <h3 className="text-sm font-medium">练习触发词</h3>
+                    {(['exact', 'contains', 'loose', 'negative', 'exit'] as const).map((kind) => (
+                      <div key={kind} className="space-y-2">
+                        <Label>{kind}</Label>
+                        <Textarea value={joinWords(topicsPayload.keywords.practice[kind])} onChange={(event) => updatePracticeKeywords(kind, event.target.value)} />
+                      </div>
+                    ))}
+                  </div>
+                  <div className="space-y-3 rounded-md border p-3">
+                    <h3 className="text-sm font-medium">难度与边界词</h3>
+                    {(['difficulty_basic', 'difficulty_advanced', 'off_topic', 'domain'] as const).map((kind) => (
+                      <div key={kind} className="space-y-2">
+                        <Label>{kind}</Label>
+                        <Textarea value={joinWords(topicsPayload.keywords.global[kind])} onChange={(event) => updateGlobalKeywords(kind, event.target.value)} />
+                      </div>
+                    ))}
+                  </div>
+                  <div className="space-y-3 rounded-md border p-3">
+                    <h3 className="text-sm font-medium">全局路由设置</h3>
+                    <div className="space-y-2">
+                      <Label>宽松练习触发最大长度</Label>
+                      <Input
+                        type="number"
+                        value={topicsPayload.settings.loose_trigger_max_len || '12'}
+                        onChange={(event) => setTopicsPayload((previous) => ({
+                          ...previous,
+                          settings: { ...previous.settings, loose_trigger_max_len: event.target.value }
+                        }))}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>超纲拒答模板</Label>
+                      <Textarea
+                        className="min-h-48"
+                        value={topicsPayload.settings.off_topic_reply || ''}
+                        onChange={(event) => setTopicsPayload((previous) => ({
+                          ...previous,
+                          settings: { ...previous.settings, off_topic_reply: event.target.value }
+                        }))}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
           <TabsContent value="config" className="space-y-4">
             <Card>
               <CardHeader>
@@ -1084,20 +1705,8 @@ export default function AdminPage() {
               <CardContent className="grid gap-4 xl:grid-cols-[1fr_320px]">
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
-                    <Label>每日一练 / 回退 Bot ID</Label>
+                    <Label>全局主 Bot ID</Label>
                     <Input value={configDraft.bot_id || ''} onChange={(event) => setConfigDraft({ ...configDraft, bot_id: event.target.value })} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>新手小白 Bot ID</Label>
-                    <Input placeholder="留空则回退到主 Bot ID" value={configDraft.bot_id_novice || ''} onChange={(event) => setConfigDraft({ ...configDraft, bot_id_novice: event.target.value })} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>辩论对手 Bot ID</Label>
-                    <Input placeholder="留空则回退到主 Bot ID" value={configDraft.bot_id_debate || ''} onChange={(event) => setConfigDraft({ ...configDraft, bot_id_debate: event.target.value })} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>计网专家 Bot ID</Label>
-                    <Input placeholder="留空则回退到主 Bot ID" value={configDraft.bot_id_expert || ''} onChange={(event) => setConfigDraft({ ...configDraft, bot_id_expert: event.target.value })} />
                   </div>
                   <div className="space-y-2">
                     <Label>API Base URL</Label>

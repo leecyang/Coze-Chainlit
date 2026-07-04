@@ -22,7 +22,6 @@ from .message import (  # noqa: F401
     TOPIC_QUESTION_SOLVE,
     TOPIC_STUDY_PLAN,
     TOPIC_USER_INPUT,
-    VALID_STYLES,
     derive,
     new_user_message,
 )

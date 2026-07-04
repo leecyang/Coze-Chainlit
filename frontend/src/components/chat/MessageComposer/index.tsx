@@ -27,7 +27,6 @@ import { useTranslation } from 'components/i18n/Translator';
 import { useQuery } from '@/hooks/query';
 import { useIsMobile } from '@/hooks/use-mobile';
 
-import PersonaSelector from '@/lingxi/PersonaSelector';
 import { chatSettingsOpenState } from '@/state/project';
 import {
   IAttachment,
@@ -318,7 +317,6 @@ export default function MessageComposer({
           />
 
           <FavoriteButton disabled={disabled} onSelect={onFavoriteSelect} />
-          <PersonaSelector />
         </div>
         <div className="flex items-center gap-1">
           <SubmitButton

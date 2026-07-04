@@ -20,11 +20,21 @@ from chainlit.auth.jwt import decode_jwt
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse as StarletteJSONResponse
 
+from .migrations import run_migrations
 from .settings import ACTIVE_CONFIG_KEYS, resolve_db_path
 from .tokens import build_token_health
 from .multi_agent.base import AgentDeps, SESSION_AGENT_CONVERSATIONS, SESSION_AGENT_STATE
 from .multi_agent.pipeline import MultiAgentPipeline
 from .multi_agent.practice_agent import DailyPracticeAgent
+from .multi_agent.registry import (
+    create_agent,
+    delete_agent,
+    get_topics_payload,
+    list_agents,
+    save_agent_subscriptions,
+    save_topics_payload,
+    update_agent,
+)
 
 # Load environment variables
 load_dotenv()
@@ -33,6 +43,7 @@ load_dotenv()
 # Configure data persistence with SQLite.
 DB_PATH = resolve_db_path()
 print(f"[Database] Using database path: {DB_PATH}")
+run_migrations(DB_PATH)
 
 @cl.data_layer
 def get_data_layer():
@@ -200,15 +211,9 @@ elif ADMIN_USERNAME in users_db:
     _save_user_to_db(ADMIN_USERNAME, ADMIN_PASSWORD, "admin")
 print(f"[Users] 当前共 {len(users_db)} 个用户")
 
-# ==================== 用户偏好风格 ====================
+# ==================== 智能体使用日志 ====================
 # DEFAULT_PERSONA 保留：管理后台会话智能体统计没有记录时的默认显示。
 DEFAULT_PERSONA = "计网专家"
-# preferred_style 只是 ResponseSelector 的偏好权重，不再强制指定人设 Agent。
-# auto 表示完全交给 Router + Selector 自主决定。
-DEFAULT_PREFERRED_STYLE = "auto"
-VALID_PREFERRED_STYLES = ("auto", "novice", "debate", "expert")
-# 存储每个用户的偏好风格，键为用户名（内存态）
-user_preferred_styles: Dict[str, str] = {}
 
 
 def _ensure_persona_usage_table():
@@ -546,15 +551,6 @@ class AdminRouteMiddleware(BaseHTTPMiddleware):
                 "is_admin": admin_username is not None,
                 "username": admin_username or ""
             })
-
-        # 拦截 GET /api/preferred-style 请求
-        # （Chainlit 兜底路由会遮蔽后注册的自定义 GET 路由，必须在中间件应答）
-        if method == "GET" and path == "/api/preferred-style":
-            username = verify_user_from_request(request)
-            if not username:
-                return StarletteJSONResponse({"preferred_style": ""}, status_code=401)
-            style = user_preferred_styles.get(username) or DEFAULT_PREFERRED_STYLE
-            return StarletteJSONResponse({"preferred_style": style})
 
         return await call_next(request)
 
@@ -1202,6 +1198,12 @@ def _get_pipeline() -> MultiAgentPipeline:
     return _pipeline
 
 
+def _invalidate_pipeline() -> None:
+    global _pipeline
+    _pipeline = None
+    print("[MultiAgent] Pipeline registry cache invalidated")
+
+
 @cl.on_chat_start
 async def on_chat_start():
     """Initialize chat session"""
@@ -1389,17 +1391,15 @@ async def on_message(message: cl.Message):
     msg = cl.Message(content="")
     await msg.send()
 
-    preferred_style = user_preferred_styles.get(username) or DEFAULT_PREFERRED_STYLE
     try:
         thread_id = cl.context.session.thread_id
     except Exception:
         thread_id = None
 
-    print(f"[on_message] user={username}, preferred_style={preferred_style}, "
-          f"message={message.content[:50]}...")
+    print(f"[on_message] user={username}, message={message.content[:50]}...")
 
     # 注意：传原文 message.content（上面的小写 content 只用于命令匹配）
-    await _get_pipeline().handle(username, message.content, thread_id, preferred_style, msg)
+    await _get_pipeline().handle(username, message.content, thread_id, msg)
 
 
 async def show_help(role: str):
@@ -1840,42 +1840,6 @@ async def check_admin_auth(request: Request):
         "is_admin": admin_username is not None,
         "username": admin_username or ""
     })
-
-
-@app.post("/api/preferred-style")
-async def set_preferred_style(request: Request):
-    """设置当前用户的偏好交互风格（供前端调用）
-
-    preferred_style 只是 ResponseSelector 的选择权重，不强制指定人设 Agent。
-    """
-    username = verify_user_from_request(request)
-    if not username:
-        return JSONResponse({"error": "未登录"}, status_code=401)
-    try:
-        body = await request.json()
-        preferred_style = body.get("preferred_style", "")
-        if preferred_style not in VALID_PREFERRED_STYLES:
-            return JSONResponse({"error": "无效的风格选择"}, status_code=400)
-        user_preferred_styles[username] = preferred_style
-        print(f"[PreferredStyle] 用户 {username} 设置偏好风格: '{preferred_style}'")
-        return JSONResponse({"success": True, "preferred_style": preferred_style})
-    except Exception as e:
-        print(f"[PreferredStyle] 设置失败: {e}")
-        return JSONResponse({"error": "设置失败"}, status_code=500)
-
-
-@app.get("/api/preferred-style")
-async def get_preferred_style(request: Request):
-    """获取当前用户的偏好交互风格（供前端调用）
-
-    注意：GET 请求实际由 AdminRouteMiddleware 拦截应答（Chainlit 兜底路由
-    会遮蔽此路由），此处保留作为接口文档与 POST 的对称定义。
-    """
-    username = verify_user_from_request(request)
-    if not username:
-        return JSONResponse({"preferred_style": ""}, status_code=401)
-    style = user_preferred_styles.get(username) or DEFAULT_PREFERRED_STYLE
-    return JSONResponse({"preferred_style": style})
 
 
 @app.get("/api/admin/stats")
@@ -2800,9 +2764,6 @@ async def get_admin_config(request: Request):
     
     return JSONResponse({
         "bot_id": COZE_BOT_ID,
-        "bot_id_novice": config_storage.get("COZE_BOT_ID_NOVICE") or "",
-        "bot_id_debate": config_storage.get("COZE_BOT_ID_DEBATE") or "",
-        "bot_id_expert": config_storage.get("COZE_BOT_ID_EXPERT") or "",
         "has_service_token": bool(COZE_JWT_TOKEN),
         "masked_service_token": _mask_secret(COZE_JWT_TOKEN),
         "jwt_expires_at": jwt_expires_at,
@@ -2825,17 +2786,6 @@ async def update_admin_config(request: Request):
             config_storage["COZE_BOT_ID"] = body["bot_id"]
             _save_config_to_db("COZE_BOT_ID", body["bot_id"])
 
-        # 各教学智能体的专属 Bot ID（允许清空以回退到主 Bot ID）
-        for field, config_key in (
-            ("bot_id_novice", "COZE_BOT_ID_NOVICE"),
-            ("bot_id_debate", "COZE_BOT_ID_DEBATE"),
-            ("bot_id_expert", "COZE_BOT_ID_EXPERT"),
-        ):
-            if field in body:
-                value = (body.get(field) or "").strip()
-                config_storage[config_key] = value
-                _save_config_to_db(config_key, value)
-
         # 接受 service_token（前端发送的字段名）
         if body.get("service_token"):
             COZE_JWT_TOKEN = body["service_token"]
@@ -2854,15 +2804,121 @@ async def update_admin_config(request: Request):
 
         changed = [
             key for key in (
-                "bot_id", "bot_id_novice", "bot_id_debate", "bot_id_expert",
-                "service_token", "jwt_expires_at", "base_url",
+                "bot_id", "service_token", "jwt_expires_at", "base_url",
             )
             if key in body and (key != "service_token" or body.get("service_token"))
         ]
         log_admin_activity(actor, "更新系统配置", "app_config", ",".join(changed))
+        if any(key in body for key in ("bot_id", "base_url", "service_token")):
+            _invalidate_pipeline()
         return JSONResponse({"success": True, "message": "配置更新成功"})
     except Exception as e:
         return JSONResponse({"success": False, "message": str(e)})
+
+
+@app.get("/api/admin/agents")
+async def get_admin_agents(request: Request):
+    if not verify_admin_from_request(request):
+        return JSONResponse({"error": "未授权"}, status_code=403)
+    try:
+        return JSONResponse(list_agents(DB_PATH))
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/admin/agents")
+async def create_admin_agent(request: Request):
+    actor = verify_admin_from_request(request)
+    if not actor:
+        return JSONResponse({"error": "未授权"}, status_code=403)
+    try:
+        body = await request.json()
+        payload = create_agent(DB_PATH, body)
+        log_admin_activity(actor, "注册智能体", body.get("agent_id", ""))
+        _invalidate_pipeline()
+        return JSONResponse(payload)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.put("/api/admin/agents/{agent_id}")
+async def update_admin_agent(agent_id: str, request: Request):
+    actor = verify_admin_from_request(request)
+    if not actor:
+        return JSONResponse({"error": "未授权"}, status_code=403)
+    try:
+        body = await request.json()
+        payload = update_agent(DB_PATH, agent_id, body)
+        log_admin_activity(actor, "更新智能体", agent_id)
+        _invalidate_pipeline()
+        return JSONResponse(payload)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.delete("/api/admin/agents/{agent_id}")
+async def delete_admin_agent(agent_id: str, request: Request):
+    actor = verify_admin_from_request(request)
+    if not actor:
+        return JSONResponse({"error": "未授权"}, status_code=403)
+    try:
+        payload = delete_agent(DB_PATH, agent_id)
+        log_admin_activity(actor, "删除智能体", agent_id)
+        _invalidate_pipeline()
+        return JSONResponse(payload)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.put("/api/admin/agents/{agent_id}/subscriptions")
+async def update_admin_agent_subscriptions(agent_id: str, request: Request):
+    actor = verify_admin_from_request(request)
+    if not actor:
+        return JSONResponse({"error": "未授权"}, status_code=403)
+    try:
+        body = await request.json()
+        subscriptions = body if isinstance(body, list) else body.get("subscriptions", [])
+        payload = save_agent_subscriptions(DB_PATH, agent_id, subscriptions)
+        log_admin_activity(actor, "更新智能体订阅", agent_id)
+        _invalidate_pipeline()
+        return JSONResponse(payload)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/admin/topics")
+async def get_admin_topics(request: Request):
+    if not verify_admin_from_request(request):
+        return JSONResponse({"error": "未授权"}, status_code=403)
+    try:
+        return JSONResponse(get_topics_payload(DB_PATH))
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.put("/api/admin/topics")
+async def update_admin_topics(request: Request):
+    actor = verify_admin_from_request(request)
+    if not actor:
+        return JSONResponse({"error": "未授权"}, status_code=403)
+    try:
+        body = await request.json()
+        payload = save_topics_payload(DB_PATH, body)
+        log_admin_activity(actor, "更新路由词表", "route_topics")
+        _invalidate_pipeline()
+        return JSONResponse(payload)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.get("/api/admin/test-connection")

@@ -33,13 +33,6 @@ TEACHING_TOPICS = (
 # 独占型 topic：只允许一个订阅者（每日一练工作流不容多 Agent 干扰）
 EXCLUSIVE_TOPICS = frozenset({TOPIC_PRACTICE_REQUEST, TOPIC_PRACTICE_ANSWER})
 
-# preferred_style 合法取值（auto 表示交给 Selector 自主决定）
-STYLE_AUTO = "auto"
-STYLE_NOVICE = "novice"
-STYLE_DEBATE = "debate"
-STYLE_EXPERT = "expert"
-VALID_STYLES = (STYLE_AUTO, STYLE_NOVICE, STYLE_DEBATE, STYLE_EXPERT)
-
 DIFFICULTY_BASIC = "basic"
 DIFFICULTY_NORMAL = "normal"
 DIFFICULTY_ADVANCED = "advanced"
@@ -65,7 +58,6 @@ class Message:
                 "基础水平": str,          # 薄弱/一般/较好/未知
                 "薄弱知识点": list[str],
             },
-            "preferred_style": "novice" | "debate" | "expert" | "auto",
             "difficulty": "basic" | "normal" | "advanced",
             "off_topic": bool,
         }
@@ -83,11 +75,8 @@ def new_user_message(
     user_message: str,
     context: Dict[str, Any],
     memory: Dict[str, Any],
-    preferred_style: str = STYLE_AUTO,
 ) -> Message:
     """把一条用户原始输入封装为 user.input 消息。"""
-    if preferred_style not in VALID_STYLES:
-        preferred_style = STYLE_AUTO
     return Message(
         topic=TOPIC_USER_INPUT,
         sender="user",
@@ -96,7 +85,6 @@ def new_user_message(
             "user_message": user_message,
             "context": context or {},
             "memory": memory or {},
-            "preferred_style": preferred_style,
             "difficulty": DIFFICULTY_NORMAL,
             "off_topic": False,
         },

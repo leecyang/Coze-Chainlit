@@ -6,7 +6,7 @@
   → Router 判定任务型 topic（off_topic 模板拒答，零 LLM 成本）
   → MessageBus.publish 任务消息
   → 独占 topic 唯一订阅者直取；教学 topic 各订阅者 bid 竞价
-  → ResponseSelector 按 preferred_style/置信度/上下文选赢家
+  → ResponseSelector 按置信度/上下文选赢家
   → 赢家调用自己的 Coze Bot 流式生成
   → agent.response 发布（观测）+ session 记账
 """
@@ -33,11 +33,8 @@ from .normalizer import normalize
 from .practice_agent import DailyPracticeAgent
 from .router import OFF_TOPIC_REPLY, is_practice_exit, route
 from .selector import select
-from .teaching_agents import (
-    DebateChallengerAgent,
-    NetworkExpertAgent,
-    NoviceLearnerAgent,
-)
+from .registry import AgentConfig, load_registry
+from .teaching_agents import RegisteredCozeAgent
 
 # 与旧 on_message 一致的错误文案
 _EMPTY_RESPONSE_ERROR = "抱歉，我没有收到有效的回复。请检查 Coze API Key 和 Bot ID 配置是否正确。"
@@ -54,20 +51,29 @@ class MultiAgentPipeline:
         self.deps = deps
         self.db_path = db_path
         self.bus = MessageBus()
+        self.snapshot = load_registry(db_path)
+        self.route_config = self.snapshot.route_config
+        self.practice_agent = DailyPracticeAgent(
+            deps,
+            self.snapshot.agents.get("Daily_Practice_Agent"),
+        )
+        self.agents: Dict[str, BaseAgent] = {}
 
-        self.practice_agent = DailyPracticeAgent(deps)
-        self.agents: Dict[str, BaseAgent] = {
-            agent.name: agent
-            for agent in (
-                NoviceLearnerAgent(deps),
-                DebateChallengerAgent(deps),
-                NetworkExpertAgent(deps),
-                self.practice_agent,
-            )
-        }
+        for config in self.snapshot.agents.values():
+            agent = self._build_agent(config)
+            self.agents[agent.name] = agent
         for agent in self.agents.values():
             for topic in agent.subscribed_topics:
                 self.bus.subscribe(topic, agent)
+        print(
+            f"[MultiAgent] Registry loaded version={self.snapshot.version} "
+            f"agents={list(self.agents)}"
+        )
+
+    def _build_agent(self, config: AgentConfig) -> BaseAgent:
+        if config.agent_id == "Daily_Practice_Agent":
+            return self.practice_agent
+        return RegisteredCozeAgent(self.deps, config)
 
     # ==================== 主入口 ====================
 
@@ -76,7 +82,6 @@ class MultiAgentPipeline:
         username: str,
         raw_text: str,
         thread_id: Optional[str],
-        preferred_style: str,
         cl_msg: "cl.Message",
     ) -> None:
         inp = normalize(raw_text)
@@ -84,13 +89,18 @@ class MultiAgentPipeline:
         # ---------- 续接优先：练习工作流挂起时，本条消息属于问答节点 ----------
         pending = self.practice_agent.get_state().get("pending_tool_action")
         if pending:
-            if is_practice_exit(inp.compact):
+            if is_practice_exit(inp.compact, self.route_config):
                 # 用户显式退出：清挂起、模板确认，不再把"退出练习"当问题路由
                 self.practice_agent.set_state(pending_tool_action=None)
                 await self._stream_template(cl_msg, _PRACTICE_EXIT_REPLY)
                 self._bookkeep(inp.text, TOPIC_PRACTICE_ANSWER, self.practice_agent.name, "已退出练习")
                 return
-            msg = await self._build_message(username, inp.text, preferred_style)
+            if self.practice_agent.name not in self.agents:
+                self.practice_agent.set_state(pending_tool_action=None)
+                await self._stream_template(cl_msg, "每日一练智能体当前已停用，请联系管理员启用后再继续。")
+                self._bookkeep(inp.text, TOPIC_PRACTICE_ANSWER, None, "每日一练已停用")
+                return
+            msg = await self._build_message(username, inp.text)
             answer_msg = derive(
                 msg, topic=TOPIC_PRACTICE_ANSWER, sender="router", pending_action=pending,
             )
@@ -101,8 +111,8 @@ class MultiAgentPipeline:
             return
 
         # ---------- 正常路由 ----------
-        msg = await self._build_message(username, inp.text, preferred_style)
-        result = route(inp)
+        msg = await self._build_message(username, inp.text)
+        result = route(inp, self.route_config)
         msg.payload["difficulty"] = result.difficulty
         msg.payload["off_topic"] = result.off_topic
         print(f"[Router] topic={result.topic} difficulty={result.difficulty} "
@@ -110,15 +120,25 @@ class MultiAgentPipeline:
 
         if result.off_topic:
             # 统一拒答模块：模板回复，不调用 LLM，不记使用日志
-            await self._stream_template(cl_msg, OFF_TOPIC_REPLY)
+            await self._stream_template(cl_msg, self.route_config.off_topic_reply or OFF_TOPIC_REPLY)
             self._bookkeep(inp.text, TOPIC_OFF_TOPIC, None, "（超纲拒答）")
             return
 
         task_msg = derive(msg, topic=result.topic, sender="router")
         subscribers = self.bus.publish(task_msg)
         if not subscribers:
-            # 理论上不可达（所有可路由 topic 都有订阅者），兜底走专家
-            subscribers = [self.agents["Network_Expert"]]
+            if task_msg.topic in (TOPIC_PRACTICE_REQUEST, TOPIC_PRACTICE_ANSWER):
+                await self._stream_template(cl_msg, "每日一练智能体当前已停用，请联系管理员启用后再开始练习。")
+                self._bookkeep(inp.text, task_msg.topic, None, "每日一练已停用")
+                return
+            subscribers = [
+                agent for agent in self.agents.values()
+                if agent.name != self.practice_agent.name
+            ]
+            if not subscribers:
+                await self._stream_template(cl_msg, "当前没有可用的教学智能体，请联系管理员完成智能体注册。")
+                self._bookkeep(inp.text, task_msg.topic, None, "无可用教学智能体")
+                return
 
         if task_msg.topic in (TOPIC_PRACTICE_REQUEST, TOPIC_PRACTICE_ANSWER):
             winner = subscribers[0]  # 独占型 topic：唯一订阅者
@@ -126,7 +146,11 @@ class MultiAgentPipeline:
             bids: List[Tuple[str, float]] = [
                 (agent.name, agent.bid(task_msg)) for agent in subscribers
             ]
-            selection = select(bids, task_msg)
+            priorities = {
+                agent.name: int(getattr(agent, "priority", 100))
+                for agent in subscribers
+            }
+            selection = select(bids, task_msg, priorities)
             winner = self.agents[selection.agent_name]
             print(f"[Selector] winner={selection.agent_name} "
                   f"score={selection.score:.2f} breakdown={selection.breakdown}")
@@ -186,7 +210,7 @@ class MultiAgentPipeline:
 
         self._bookkeep(msg.payload.get("user_message", ""), msg.topic, agent.name, content or "")
 
-    async def _build_message(self, username: str, text: str, preferred_style: str) -> Message:
+    async def _build_message(self, username: str, text: str) -> Message:
         memory = await asyncio.to_thread(fetch_user_memory, self.db_path, username)
         history: List[str] = cl.user_session.get(SESSION_RECENT_HISTORY) or []
         context = {
@@ -195,7 +219,7 @@ class MultiAgentPipeline:
             "last_topic": cl.user_session.get(SESSION_LAST_TOPIC),
             "last_agent": cl.user_session.get(SESSION_LAST_AGENT),
         }
-        return new_user_message(username, text, context, memory, preferred_style)
+        return new_user_message(username, text, context, memory)
 
     def _bookkeep(self, user_text: str, topic: str, agent_name: Optional[str], reply: str) -> None:
         if agent_name:

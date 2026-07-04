@@ -28,7 +28,6 @@ export async function lingxiFetch<T>(
 }
 
 export type TargetRole = '新手小白' | '辩论对手' | '计网专家';
-export type PreferredStyle = 'auto' | 'novice' | 'debate' | 'expert';
 
 export type LeaderboardEntry = {
   rank?: number;
@@ -99,14 +98,61 @@ export type AdminOverview = {
 
 export type AdminConfig = {
   bot_id?: string;
-  bot_id_novice?: string;
-  bot_id_debate?: string;
-  bot_id_expert?: string;
   base_url?: string;
   jwt_expires_at?: number | null;
   has_service_token?: boolean;
   masked_service_token?: string;
   service_token?: string;
+};
+
+export type AgentSubscription = {
+  topic: string;
+  base_bid: number;
+  basic_bonus: number;
+  advanced_bonus: number;
+};
+
+export type AgentDefinition = {
+  agent_id: string;
+  display_name: string;
+  description: string;
+  agent_type: 'coze_chat' | 'coze_workflow';
+  bot_id: string;
+  enabled: boolean;
+  system_builtin: boolean;
+  locked: boolean;
+  exclusive: boolean;
+  priority: number;
+  context_policy: 'on_switch_recent_2' | 'none';
+  created_at?: string;
+  updated_at?: string;
+  subscription_count: number;
+  subscriptions: AgentSubscription[];
+};
+
+export type RouteTopic = {
+  topic: string;
+  display_name: string;
+  description: string;
+  is_teaching: boolean;
+  is_exclusive: boolean;
+  route_priority: number;
+  enabled: boolean;
+};
+
+export type AgentsPayload = {
+  agents: AgentDefinition[];
+  topics: RouteTopic[];
+};
+
+export type TopicsPayload = {
+  topics: RouteTopic[];
+  keywords: {
+    topic: Record<string, { strong?: string[]; weak?: string[]; pattern?: string[] }>;
+    practice: Record<string, string[]>;
+    global: Record<string, string[]>;
+  };
+  settings: Record<string, string>;
 };
 
 export type AdminConversation = {

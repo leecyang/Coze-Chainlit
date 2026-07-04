@@ -1,10 +1,12 @@
-"""离线自测：只依赖纯模块（message/normalizer/router/selector/bus），
-不需要 chainlit、数据库或网络。
+"""离线自测：不需要 chainlit 或网络。
 
 运行：cd backend && python -m chainlit.lingxi.multi_agent.selftest
 """
 
 import sys
+import tempfile
+
+from chainlit.lingxi.migrations import run_migrations
 
 from .bus import MessageBus
 from .message import (
@@ -21,6 +23,7 @@ from .message import (
     new_user_message,
 )
 from .normalizer import normalize
+from .registry import RegistrySnapshot, load_registry
 from .router import is_practice_exit, route
 from .selector import select
 
@@ -36,11 +39,13 @@ def check(label: str, actual, expected) -> None:
 
 
 def route_topic(text: str) -> str:
-    return route(normalize(text)).topic
+    assert REGISTRY is not None
+    return route(normalize(text), REGISTRY.route_config).topic
 
 
 def route_difficulty(text: str) -> str:
-    return route(normalize(text)).difficulty
+    assert REGISTRY is not None
+    return route(normalize(text), REGISTRY.route_config).difficulty
 
 
 def test_router() -> None:
@@ -62,8 +67,9 @@ def test_router() -> None:
     # 宽松触发护栏：关于练习的"提问"不是练习请求
     check("护栏:做题技巧提问", route_topic("选择题做题技巧有哪些"), TOPIC_CONCEPT_EXPLAIN)
     check("护栏:长句不触发", route_topic("我昨天做题的时候发现子网划分总是算错应该怎么办呢"), TOPIC_CONCEPT_EXPLAIN)
-    check("退出词识别", is_practice_exit(normalize("退出练习").compact), True)
-    check("非退出词", is_practice_exit(normalize("继续下一题").compact), False)
+    assert REGISTRY is not None
+    check("退出词识别", is_practice_exit(normalize("退出练习").compact, REGISTRY.route_config), True)
+    check("非退出词", is_practice_exit(normalize("继续下一题").compact, REGISTRY.route_config), False)
 
     # concept.explain（方案示例）
     check("concept:三次握手", route_topic("TCP 三次握手是什么？"), TOPIC_CONCEPT_EXPLAIN)
@@ -98,32 +104,40 @@ def test_router() -> None:
     check("difficulty:默认", route_difficulty("什么是VLAN"), DIFFICULTY_NORMAL)
 
 
-def _msg(topic: str, style: str = "auto", last_agent=None, difficulty: str = "normal"):
-    m = new_user_message("tester", "示例问题", {"last_agent": last_agent}, {}, style)
+REGISTRY: RegistrySnapshot | None = None
+
+
+def _msg(topic: str, last_agent=None, difficulty: str = "normal"):
+    m = new_user_message("tester", "示例问题", {"last_agent": last_agent}, {})
     m.topic = topic
     m.payload["difficulty"] = difficulty
     return m
 
 
 def _bids_for(topic: str, difficulty: str = "normal"):
-    """复算教学 Agent 竞价表（避免导入依赖 chainlit 的 teaching_agents）。"""
-    table = {
-        TOPIC_CONCEPT_EXPLAIN: {"Novice_Learner": 0.60, "Debate_Challenger": 0.50, "Network_Expert": 0.70},
-        TOPIC_EXAM_ANALYZE: {"Novice_Learner": 0.45, "Debate_Challenger": 0.55, "Network_Expert": 0.75},
-        TOPIC_QUESTION_SOLVE: {"Novice_Learner": 0.50, "Debate_Challenger": 0.70, "Network_Expert": 0.65},
-        TOPIC_STUDY_PLAN: {"Novice_Learner": 0.65, "Debate_Challenger": 0.40, "Network_Expert": 0.70},
-    }
-    bids = dict(table[topic])
-    if difficulty == "basic":
-        bids["Novice_Learner"] += 0.10
-    elif difficulty == "advanced":
-        bids["Network_Expert"] += 0.10
-        bids["Debate_Challenger"] += 0.05
-    return list(bids.items())
+    """从 DB registry seed 的订阅与 bid 表计算竞价。"""
+    assert REGISTRY is not None
+    bids = []
+    for agent in REGISTRY.agents.values():
+        subscription = agent.subscriptions.get(topic)
+        if not subscription:
+            continue
+        score = subscription.base_bid
+        if difficulty == "basic":
+            score += subscription.basic_bonus
+        elif difficulty == "advanced":
+            score += subscription.advanced_bonus
+        bids.append((agent.agent_id, score))
+    return bids
+
+
+def _priorities():
+    assert REGISTRY is not None
+    return {agent.agent_id: agent.priority for agent in REGISTRY.agents.values()}
 
 
 def test_selector() -> None:
-    print("[Selector] 打分与偏好权重")
+    print("[Selector] DB bid 与连续性")
     # auto 无历史：Expert 赢 concept/exam/plan，Debate 赢 question.solve
     for topic, expected in (
         (TOPIC_CONCEPT_EXPLAIN, "Network_Expert"),
@@ -131,32 +145,49 @@ def test_selector() -> None:
         (TOPIC_STUDY_PLAN, "Network_Expert"),
         (TOPIC_QUESTION_SOLVE, "Debate_Challenger"),
     ):
-        sel = select(_bids_for(topic), _msg(topic))
+        sel = select(_bids_for(topic), _msg(topic), _priorities())
         check(f"auto:{topic}", sel.agent_name, expected)
 
     # basic 难度翻转 study.plan 给 Novice（0.75 > 0.70）
-    sel = select(_bids_for(TOPIC_STUDY_PLAN, "basic"), _msg(TOPIC_STUDY_PLAN, difficulty="basic"))
+    sel = select(_bids_for(TOPIC_STUDY_PLAN, "basic"), _msg(TOPIC_STUDY_PLAN, difficulty="basic"), _priorities())
     check("basic翻转study.plan", sel.agent_name, "Novice_Learner")
 
-    # 显式偏好是权重不是强制：novice 偏好在 exam.analyze 上输给 Expert
-    sel = select(_bids_for(TOPIC_EXAM_ANALYZE), _msg(TOPIC_EXAM_ANALYZE, style="novice"))
-    check("偏好非强制:exam仍是Expert", sel.agent_name, "Network_Expert")
-    # 偏好 + 连续性加成则反超（0.45+0.25+0.10=0.80 > 0.75）
+    # 连续性只在分差足够小时生效，不再有用户偏好风格加权
+    sel = select(_bids_for(TOPIC_EXAM_ANALYZE), _msg(TOPIC_EXAM_ANALYZE, last_agent="Novice_Learner"), _priorities())
+    check("连续性不强制:exam仍是Expert", sel.agent_name, "Network_Expert")
     sel = select(
-        _bids_for(TOPIC_EXAM_ANALYZE),
-        _msg(TOPIC_EXAM_ANALYZE, style="novice", last_agent="Novice_Learner"),
+        _bids_for(TOPIC_QUESTION_SOLVE),
+        _msg(TOPIC_QUESTION_SOLVE, last_agent="Network_Expert"),
+        _priorities(),
     )
-    check("偏好+连续性反超", sel.agent_name, "Novice_Learner")
-    # 偏好在 concept 上生效（0.50+0.25=0.75 > 0.70）
-    sel = select(_bids_for(TOPIC_CONCEPT_EXPLAIN), _msg(TOPIC_CONCEPT_EXPLAIN, style="debate"))
-    check("偏好debate赢concept", sel.agent_name, "Debate_Challenger")
+    check("连续性可反超小分差", sel.agent_name, "Network_Expert")
 
-    # 平手静态序：Expert > Novice > Debate
+    # 平手：上一轮 Agent > priority
+    sel = select(
+        [("Debate_Challenger", 0.5), ("Network_Expert", 0.5), ("Novice_Learner", 0.5)],
+        _msg(TOPIC_CONCEPT_EXPLAIN, last_agent="Debate_Challenger"),
+        _priorities(),
+    )
+    check("平手上一轮优先", sel.agent_name, "Debate_Challenger")
     sel = select(
         [("Debate_Challenger", 0.5), ("Network_Expert", 0.5), ("Novice_Learner", 0.5)],
         _msg(TOPIC_CONCEPT_EXPLAIN),
+        _priorities(),
     )
-    check("平手静态序Expert", sel.agent_name, "Network_Expert")
+    check("平手priority优先", sel.agent_name, "Network_Expert")
+
+
+def test_registry() -> None:
+    print("[Registry] migration seed")
+    assert REGISTRY is not None
+    check("默认Agent数量", set(REGISTRY.agents), {
+        "Novice_Learner",
+        "Debate_Challenger",
+        "Network_Expert",
+        "Daily_Practice_Agent",
+    })
+    check("每日一练类型", REGISTRY.agents["Daily_Practice_Agent"].agent_type, "coze_workflow")
+    check("question.solve订阅数", len(_bids_for(TOPIC_QUESTION_SOLVE)), 3)
 
 
 def test_bus() -> None:
@@ -188,6 +219,13 @@ def test_normalizer() -> None:
 
 
 def main() -> int:
+    global REGISTRY
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = f"{tmp}/chainlit.db"
+        run_migrations(db_path)
+        run_migrations(db_path)
+        REGISTRY = load_registry(db_path)
+        test_registry()
     test_normalizer()
     test_router()
     test_selector()

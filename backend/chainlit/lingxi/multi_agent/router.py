@@ -9,7 +9,7 @@ Agent——发布后由订阅关系和 ResponseSelector 决定谁来响应。
 
 import re
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
 from .message import (
     DIFFICULTY_ADVANCED,
@@ -23,6 +23,7 @@ from .message import (
     TOPIC_STUDY_PLAN,
 )
 from .normalizer import NormalizedInput
+from .registry import RouteConfig
 
 # ==================== 每日一练触发 ====================
 # 整句精确匹配（compact 与之完全相等）。"开始每日一练"是前端启动器按钮文案，
@@ -153,38 +154,46 @@ def _score(compact: str, strong: tuple, weak: tuple, matched: List[str]) -> int:
     return score
 
 
-def _detect_difficulty(compact: str) -> str:
-    for kw in _DIFFICULTY_BASIC_WORDS:
+def _detect_difficulty(compact: str, config: Optional[RouteConfig] = None) -> str:
+    basic_words = config.difficulty_basic if config else _DIFFICULTY_BASIC_WORDS
+    advanced_words = config.difficulty_advanced if config else _DIFFICULTY_ADVANCED_WORDS
+    for kw in basic_words:
         if kw in compact:
             return DIFFICULTY_BASIC
-    for kw in _DIFFICULTY_ADVANCED_WORDS:
+    for kw in advanced_words:
         if kw in compact:
             return DIFFICULTY_ADVANCED
     return DIFFICULTY_NORMAL
 
 
-def is_practice_trigger(compact: str) -> bool:
-    if compact in PRACTICE_TRIGGERS_EXACT:
+def is_practice_trigger(compact: str, config: Optional[RouteConfig] = None) -> bool:
+    exact = config.practice_exact if config else PRACTICE_TRIGGERS_EXACT
+    contains = config.practice_contains if config else PRACTICE_TRIGGERS_CONTAINS
+    loose = config.practice_loose if config else PRACTICE_TRIGGERS_LOOSE
+    negative = config.practice_negative if config else _PRACTICE_NEGATIVE_MARKERS
+    loose_max_len = config.loose_trigger_max_len if config else LOOSE_TRIGGER_MAX_LEN
+    if compact in exact:
         return True
-    if any(kw in compact for kw in PRACTICE_TRIGGERS_CONTAINS):
+    if any(kw in compact for kw in contains):
         return True
-    if len(compact) <= LOOSE_TRIGGER_MAX_LEN:
-        if not any(neg in compact for neg in _PRACTICE_NEGATIVE_MARKERS):
-            if any(kw in compact for kw in PRACTICE_TRIGGERS_LOOSE):
+    if len(compact) <= loose_max_len:
+        if not any(neg in compact for neg in negative):
+            if any(kw in compact for kw in loose):
                 return True
     return False
 
 
-def is_practice_exit(compact: str) -> bool:
-    return any(kw in compact for kw in PRACTICE_EXIT_WORDS)
+def is_practice_exit(compact: str, config: Optional[RouteConfig] = None) -> bool:
+    words = config.practice_exit if config else PRACTICE_EXIT_WORDS
+    return any(kw in compact for kw in words)
 
 
-def route(inp: NormalizedInput) -> RouteResult:
+def route(inp: NormalizedInput, config: Optional[RouteConfig] = None) -> RouteResult:
     compact = inp.compact
-    difficulty = _detect_difficulty(compact)
+    difficulty = _detect_difficulty(compact, config)
 
     # 1) 练习触发（独占型 topic）
-    if is_practice_trigger(compact):
+    if is_practice_trigger(compact, config):
         return RouteResult(
             topic=TOPIC_PRACTICE_REQUEST,
             difficulty=difficulty,
@@ -192,33 +201,65 @@ def route(inp: NormalizedInput) -> RouteResult:
         )
 
     # 2) 教学 topic 打分
-    matched: dict = {t: [] for t in (
-        TOPIC_QUESTION_SOLVE, TOPIC_EXAM_ANALYZE, TOPIC_STUDY_PLAN, TOPIC_CONCEPT_EXPLAIN,
-    )}
-    scores = {
-        TOPIC_QUESTION_SOLVE: _score(
-            compact, _QUESTION_SOLVE_STRONG, _QUESTION_SOLVE_WEAK, matched[TOPIC_QUESTION_SOLVE]
-        ),
-        TOPIC_EXAM_ANALYZE: _score(
-            compact, _EXAM_ANALYZE_STRONG, _EXAM_ANALYZE_WEAK, matched[TOPIC_EXAM_ANALYZE]
-        ),
-        TOPIC_STUDY_PLAN: _score(
-            compact, _STUDY_PLAN_STRONG, _STUDY_PLAN_WEAK, matched[TOPIC_STUDY_PLAN]
-        ),
-        TOPIC_CONCEPT_EXPLAIN: _score(
-            compact, _CONCEPT_EXPLAIN_STRONG, DOMAIN_TERMS, matched[TOPIC_CONCEPT_EXPLAIN]
-        ),
-    }
-    for pattern in _QUESTION_SOLVE_PATTERNS:
-        if pattern.search(compact):
-            scores[TOPIC_QUESTION_SOLVE] += 2
-            matched[TOPIC_QUESTION_SOLVE].append(pattern.pattern)
+    if config:
+        priority = [
+            topic.topic
+            for topic in sorted(config.topics.values(), key=lambda item: (item.route_priority, item.topic))
+            if topic.is_teaching and topic.enabled
+        ]
+        if not priority:
+            priority = [TOPIC_CONCEPT_EXPLAIN]
+        matched = {topic: [] for topic in priority}
+        scores = {topic: 0 for topic in priority}
+        for topic in priority:
+            groups = config.topic_keywords.get(topic) or {}
+            strong = tuple(groups.get("strong") or [])
+            weak_words = list(groups.get("weak") or [])
+            if topic == TOPIC_CONCEPT_EXPLAIN:
+                weak_words.extend(config.domain_terms)
+            scores[topic] += _score(compact, strong, tuple(weak_words), matched[topic])
+            for pattern_text in groups.get("pattern") or []:
+                try:
+                    if re.search(pattern_text, compact):
+                        scores[topic] += 2
+                        matched[topic].append(pattern_text)
+                except re.error:
+                    continue
+        domain_terms = config.domain_terms
+        off_topic_blacklist = config.off_topic_blacklist
+    else:
+        matched = {t: [] for t in (
+            TOPIC_QUESTION_SOLVE, TOPIC_EXAM_ANALYZE, TOPIC_STUDY_PLAN, TOPIC_CONCEPT_EXPLAIN,
+        )}
+        scores = {
+            TOPIC_QUESTION_SOLVE: _score(
+                compact, _QUESTION_SOLVE_STRONG, _QUESTION_SOLVE_WEAK, matched[TOPIC_QUESTION_SOLVE]
+            ),
+            TOPIC_EXAM_ANALYZE: _score(
+                compact, _EXAM_ANALYZE_STRONG, _EXAM_ANALYZE_WEAK, matched[TOPIC_EXAM_ANALYZE]
+            ),
+            TOPIC_STUDY_PLAN: _score(
+                compact, _STUDY_PLAN_STRONG, _STUDY_PLAN_WEAK, matched[TOPIC_STUDY_PLAN]
+            ),
+            TOPIC_CONCEPT_EXPLAIN: _score(
+                compact, _CONCEPT_EXPLAIN_STRONG, DOMAIN_TERMS, matched[TOPIC_CONCEPT_EXPLAIN]
+            ),
+        }
+        for pattern in _QUESTION_SOLVE_PATTERNS:
+            if pattern.search(compact):
+                scores[TOPIC_QUESTION_SOLVE] += 2
+                matched[TOPIC_QUESTION_SOLVE].append(pattern.pattern)
+        priority = (
+            TOPIC_QUESTION_SOLVE, TOPIC_EXAM_ANALYZE, TOPIC_STUDY_PLAN, TOPIC_CONCEPT_EXPLAIN,
+        )
+        domain_terms = DOMAIN_TERMS
+        off_topic_blacklist = OFF_TOPIC_BLACKLIST
 
-    domain_hits = any(kw in compact for kw in DOMAIN_TERMS)
+    domain_hits = any(kw in compact for kw in domain_terms)
     total_score = sum(scores.values())
 
     # 3) off_topic 门：黑名单命中且教学表+领域白名单零命中才拒答
-    blacklist_hits = [kw for kw in OFF_TOPIC_BLACKLIST if kw in compact]
+    blacklist_hits = [kw for kw in off_topic_blacklist if kw in compact]
     if blacklist_hits and total_score == 0 and not domain_hits:
         return RouteResult(
             topic=TOPIC_OFF_TOPIC,
@@ -229,10 +270,7 @@ def route(inp: NormalizedInput) -> RouteResult:
 
     # 4) 最高分胜出；平手按 question.solve > exam.analyze > study.plan >
     #    concept.explain；零命中默认 concept.explain
-    priority = (
-        TOPIC_QUESTION_SOLVE, TOPIC_EXAM_ANALYZE, TOPIC_STUDY_PLAN, TOPIC_CONCEPT_EXPLAIN,
-    )
     best = max(priority, key=lambda t: (scores[t], -priority.index(t)))
     if scores[best] == 0:
-        best = TOPIC_CONCEPT_EXPLAIN
+        best = TOPIC_CONCEPT_EXPLAIN if TOPIC_CONCEPT_EXPLAIN in scores else priority[0]
     return RouteResult(topic=best, difficulty=difficulty, matched=matched[best])

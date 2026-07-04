@@ -48,6 +48,19 @@ function mockFetch() {
       });
     }
     if (url.startsWith('/api/admin/learning')) return Promise.resolve(page);
+    if (url === '/api/admin/agents') {
+      return Promise.resolve({
+        agents: [],
+        topics: []
+      });
+    }
+    if (url === '/api/admin/topics') {
+      return Promise.resolve({
+        topics: [],
+        keywords: { topic: {}, practice: {}, global: {} },
+        settings: {}
+      });
+    }
     if (url === '/api/admin/config') {
       if (options?.method === 'PUT') return Promise.resolve({ success: true });
       return Promise.resolve({

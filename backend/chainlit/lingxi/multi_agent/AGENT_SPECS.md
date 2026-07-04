@@ -1,26 +1,45 @@
 # LingXi V3 Agent Specs
 
-本文档描述当前 `dev/v3-upgrade-beta` 分支中所有 Agent 的请求格式、响应格式、字段含义，以及建议配置到 Coze Bot 的完整 System Prompt。
+本文档描述 `dev/v3-upgrade-beta` 的智能体注册、路由托管、请求/响应字段，以及默认 Agent 的 Coze Prompt。Prompt 不进入数据库版本化，实际生产 Prompt 仍在 Coze 平台维护。
 
-## Agent 清单
+## 运行时原则
 
-| Agent name | 展示名 / `agent_name` | Bot ID 配置键 | 订阅 topic | 说明 |
-| --- | --- | --- | --- | --- |
-| `Novice_Learner` | `新手小白` | `COZE_BOT_ID_NOVICE`，空值回退 `COZE_BOT_ID` | `concept.explain` / `exam.analyze` / `question.solve` / `study.plan` | 面向零基础用户，用费曼反问和类比帮助用户讲清楚 |
-| `Debate_Challenger` | `辩论对手` | `COZE_BOT_ID_DEBATE`，空值回退 `COZE_BOT_ID` | `concept.explain` / `exam.analyze` / `question.solve` / `study.plan` | 用反例、边界条件、陷阱题挑战理解 |
-| `Network_Expert` | `计网专家` | `COZE_BOT_ID_EXPERT`，空值回退 `COZE_BOT_ID` | `concept.explain` / `exam.analyze` / `question.solve` / `study.plan` | 系统讲解、考试映射、规范推导 |
-| `Daily_Practice_Agent` | `每日一练` | `COZE_BOT_ID` | `practice.request` / `practice.answer` | 独占型 Workflow Agent，负责每日一练工作流 |
+- 用户前端不选择智能体或人设，所有消息统一交给 Router + Agent bid 表决定。
+- 教学型 Agent 统一由 `agent_definitions` 和 `agent_subscriptions` 注册，不再使用 Python 硬编码教学 Agent 类。
+- Coze 自定义变量使用 `agent_name` 表达当前智能体中文名。
+- 只有跨 Agent 切换时，才把最近 2 轮对话写入 `context` 和 `system_context`。
+- `Daily_Practice_Agent` 保留专用 workflow 续接逻辑，只接收 `username`。
+
+## 默认 Agent
+
+| Agent ID | 中文名 | 类型 | 系统内置 | 锁定 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `Novice_Learner` | `新手小白` | `coze_chat` | 是 | 否 | 通俗类比、费曼复述、零基础友好 |
+| `Debate_Challenger` | `辩论对手` | `coze_chat` | 是 | 否 | 反例、边界条件、陷阱题辨析 |
+| `Network_Expert` | `计网专家` | `coze_chat` | 是 | 否 | 系统讲解、考试映射、规范推导 |
+| `Daily_Practice_Agent` | `每日一练` | `coze_workflow` | 是 | 是 | 独占每日一练 workflow，可编辑 Bot ID 和启停，不可删除 |
+
+## Topic
+
+| Topic | 中文名 | 用途 | 默认独占 |
+| --- | --- | --- | --- |
+| `concept.explain` | 概念讲解 | 网络概念、协议原理、知识点解释 | 否 |
+| `exam.analyze` | 考点分析 | 考纲、题型、分值结构、高频考点 | 否 |
+| `question.solve` | 解题答疑 | 题目解析、选项判断、计算过程 | 否 |
+| `study.plan` | 备考规划 | 学习路线、复习计划、资源安排 | 否 |
+| `practice.request` | 每日一练启动 | 进入每日一练 workflow | 是 |
+| `practice.answer` | 每日一练续接 | workflow 挂起后的答题续接 | 是 |
+| `practice.report` | 每日一练报告 | workflow 结果观测和后续扩展 | 否 |
 
 ## Pipeline 输入
 
-`MultiAgentPipeline.handle(...)` 接收来自 Chainlit 的用户消息。该层不暴露给 Coze，但决定路由和 Agent 选择。
+`MultiAgentPipeline.handle(...)` 是 Chainlit 后端调用入口。
 
 ```json
 {
   "username": "alice",
   "raw_text": "什么是 TCP 三次握手？",
   "thread_id": "chainlit-thread-id",
-  "preferred_style": "auto",
   "cl_msg": "Chainlit Message object"
 }
 ```
@@ -30,14 +49,13 @@
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `username` | string | 是 | 当前登录用户 |
-| `raw_text` | string | 是 | 用户原始输入；Normalizer 会去首尾空白并折叠连续空白 |
-| `thread_id` | string / null | 否 | Chainlit thread id，用于后台统计 |
-| `preferred_style` | `auto` / `novice` / `debate` / `expert` | 是 | 仅作为 Selector 权重，不强制指定 Agent |
+| `raw_text` | string | 是 | 用户原始输入 |
+| `thread_id` | string/null | 否 | Chainlit thread id，用于统计和审计 |
 | `cl_msg` | object | 是 | Chainlit 流式输出对象 |
 
-## MessageBus 消息格式
+## MessageBus 消息
 
-内部统一消息为 `Message` dataclass。
+内部消息是 `Message` dataclass。
 
 ```json
 {
@@ -62,7 +80,6 @@
       "基础水平": "未知",
       "薄弱知识点": []
     },
-    "preferred_style": "auto",
     "difficulty": "normal",
     "off_topic": false
   }
@@ -73,34 +90,75 @@
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `topic` | string | 任务型 topic，不是 Agent 名 |
-| `sender` | string | `user` / `router` / Agent name |
+| `topic` | string | 任务型 topic，不是 Agent ID |
+| `sender` | string | `user`、`router` 或 Agent ID |
 | `payload.username` | string | 当前用户 |
-| `payload.user_message` | string | 发送给 Coze 的用户输入 |
-| `payload.context.recent_summary` | string | 最近最多 6 轮摘要，仅供内部路由上下文 |
-| `payload.context.recent_turns` | string[] | 最近 2 轮摘要；只在跨 Agent 切换时注入 Coze |
-| `payload.context.last_topic` | string / null | 上一轮 topic |
-| `payload.context.last_agent` | string / null | 上一轮实际输出 Agent |
-| `payload.memory` | object | 从错题表提取的长期记忆，当前不注入 Coze |
-| `payload.preferred_style` | string | 用户偏好风格 |
-| `payload.difficulty` | `basic` / `normal` / `advanced` | Router 识别出的难度 |
+| `payload.user_message` | string | 本轮用户输入 |
+| `payload.context.recent_summary` | string | 最近最多 6 轮摘要，仅内部保存 |
+| `payload.context.recent_turns` | string[] | 最近 2 轮摘要，跨 Agent 切换时注入 Coze |
+| `payload.context.last_topic` | string/null | 上一轮 topic |
+| `payload.context.last_agent` | string/null | 上一轮实际输出 Agent ID |
+| `payload.memory` | object | 从学习数据提取的长期记忆 |
+| `payload.difficulty` | `basic`/`normal`/`advanced` | Router 根据词表识别的难度 |
 | `payload.off_topic` | boolean | 是否超出计网备考范围 |
 
-## 教学 Agent 到 Coze 的请求格式
+## Selector 输入和输出
 
-三个教学 Agent 使用同一个请求结构。请求地址为 Coze Chat API：
-
-```http
-POST /v3/chat?conversation_id=<agent_conversation_id>
-Authorization: Bearer <COZE_JWT_TOKEN>
-Content-Type: application/json
-```
-
-请求体：
+Selector 输入：
 
 ```json
 {
-  "bot_id": "<COZE_BOT_ID_NOVICE | COZE_BOT_ID_DEBATE | COZE_BOT_ID_EXPERT | COZE_BOT_ID>",
+  "bids": [
+    ["Novice_Learner", 0.6],
+    ["Debate_Challenger", 0.5],
+    ["Network_Expert", 0.7]
+  ],
+  "last_agent": "Debate_Challenger",
+  "priorities": {
+    "Network_Expert": 10,
+    "Novice_Learner": 20,
+    "Debate_Challenger": 30
+  }
+}
+```
+
+选择规则：
+
+| 阶段 | 规则 |
+| --- | --- |
+| 基础分 | `total = bid + continuity_bonus` |
+| 连续性 | 若候选 Agent 等于上一轮 Agent，加 `0.10` |
+| 平手 | 上一轮 Agent 优先，然后按 Agent `priority` 升序，最后按 Agent ID 字典序 |
+
+Selector 输出：
+
+```json
+{
+  "agent_name": "Network_Expert",
+  "score": 0.7,
+  "breakdown": {
+    "Network_Expert": {
+      "bid": 0.7,
+      "continuity_bonus": 0,
+      "total": 0.7
+    }
+  }
+}
+```
+
+## RegisteredCozeAgent 请求
+
+所有 `coze_chat` Agent 使用同一请求结构。
+
+```http
+POST /v3/chat?conversation_id=<agent_conversation_id>
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+```json
+{
+  "bot_id": "<agent_definitions.bot_id 或 COZE_BOT_ID 回退>",
   "user_id": "alice",
   "additional_messages": [
     {
@@ -116,8 +174,8 @@ Content-Type: application/json
     "agent_name": "计网专家",
     "task_topic": "concept.explain",
     "difficulty": "normal",
-    "context": "用户: ... | Novice_Learner(concept.explain): ...",
-    "system_context": "用户: ... | Novice_Learner(concept.explain): ..."
+    "context": "用户: ... | 新手小白(concept.explain): ...",
+    "system_context": "用户: ... | 新手小白(concept.explain): ..."
   }
 }
 ```
@@ -126,7 +184,7 @@ Content-Type: application/json
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `bot_id` | string | 是 | 对应 Agent 的 Bot ID；未配置教学 Bot 时回退 `COZE_BOT_ID` |
+| `bot_id` | string | 是 | Agent 专属 Bot ID；为空时回退全局主 Bot ID |
 | `user_id` | string | 是 | 当前用户名 |
 | `additional_messages[0].role` | string | 是 | 固定 `user` |
 | `additional_messages[0].content` | string | 是 | 当前用户输入 |
@@ -134,27 +192,17 @@ Content-Type: application/json
 | `stream` | boolean | 是 | 固定 `true` |
 | `auto_save_history` | boolean | 是 | 固定 `true` |
 | `custom_variables.username` | string | 是 | 当前用户名 |
-| `custom_variables.agent_name` | string | 是 | 当前 Agent 中文展示名：`新手小白` / `辩论对手` / `计网专家` |
-| `custom_variables.task_topic` | string | 是 | `concept.explain` / `exam.analyze` / `question.solve` / `study.plan` |
-| `custom_variables.difficulty` | string | 是 | `basic` / `normal` / `advanced` |
-| `custom_variables.context` | string | 否 | 仅当从其他 Agent 切换到当前 Agent 且有历史时注入；内容为最近 2 轮摘要 |
-| `custom_variables.system_context` | string | 否 | 与 `context` 相同，给提示词中更偏系统上下文的变量名使用 |
+| `custom_variables.agent_name` | string | 是 | 当前 Agent 中文展示名 |
+| `custom_variables.task_topic` | string | 是 | 当前任务 topic |
+| `custom_variables.difficulty` | string | 是 | `basic`、`normal` 或 `advanced` |
+| `custom_variables.context` | string | 否 | 仅跨 Agent 切换且有最近历史时存在 |
+| `custom_variables.system_context` | string | 否 | 与 `context` 同内容，供 Coze Prompt 作为系统上下文使用 |
 
-重要约束：
-
-| 约束 | 说明 |
-| --- | --- |
-| 不再发送固定人设变量 | 所有 Coze Bot 不应依赖旧变量；使用 `{{agent_name}}` |
-| 跨 Agent 上下文按需注入 | 同一个 Agent 连续响应时不发送 `context` / `system_context` |
-| 教学 Agent 不应触发 Workflow 挂起 | 教学 Bot 应只输出自然语言 answer，不返回 `requires_action` |
-
-## 教学 Agent 响应格式
-
-Coze 返回 SSE，后端抽取并归一化为：
+RegisteredCozeAgent 响应：
 
 ```json
 {
-  "content": "流式输出完成后的最终文本；无内容时为 null",
+  "content": "最终 answer 文本；已流式写入 Chainlit UI",
   "requires_action": null
 }
 ```
@@ -163,26 +211,22 @@ Coze 返回 SSE，后端抽取并归一化为：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `content` | string / null | 最后一条 answer 消息的完整文本，已流式写入 Chainlit UI |
-| `requires_action` | null | 教学 Agent 必须为 `null`；如果非空，后端会记录警告并忽略挂起状态 |
+| `content` | string/null | Coze answer 完整文本；为空时后端输出错误模板 |
+| `requires_action` | null/object | 教学 Agent 应为 `null`；若非空，后端只记录警告，不进入 workflow 续接 |
 
-建议教学 Bot 输出 Markdown 自然语言，不输出 JSON。除非用户明确要求，不要包裹代码块。
+## DailyPracticeAgent 请求
 
-## 每日一练 Agent 到 Coze 的请求格式
-
-`Daily_Practice_Agent` 使用主 Bot `COZE_BOT_ID`，不传 `agent_name`、不传 `task_topic`、不传 `difficulty`、不传上下文变量。
+每日一练只使用 `username` 自定义变量。
 
 ```http
 POST /v3/chat?conversation_id=<daily_practice_conversation_id>
-Authorization: Bearer <COZE_JWT_TOKEN>
+Authorization: Bearer <token>
 Content-Type: application/json
 ```
 
-请求体：
-
 ```json
 {
-  "bot_id": "<COZE_BOT_ID>",
+  "bot_id": "<Daily_Practice_Agent.bot_id 或 COZE_BOT_ID 回退>",
   "user_id": "alice",
   "additional_messages": [
     {
@@ -199,280 +243,258 @@ Content-Type: application/json
 }
 ```
 
-用户答题续接时，如果 Coze 返回的是 `reply_message` 类型挂起，后端继续调用同一个 `/v3/chat`，`content` 为用户答案，例如：
+当 workflow 返回普通 `reply_message` 挂起时，用户答案继续走同一个 `/v3/chat` 请求，`content` 改为用户答案。
 
-```json
-{
-  "bot_id": "<COZE_BOT_ID>",
-  "user_id": "alice",
-  "additional_messages": [
-    {
-      "role": "user",
-      "content": "B",
-      "content_type": "text"
-    }
-  ],
-  "stream": true,
-  "auto_save_history": true,
-  "custom_variables": {
-    "username": "alice"
-  }
-}
-```
-
-## 每日一练挂起续接格式
-
-当 Coze Workflow 返回 `requires_action`，后端保存如下结构：
-
-```json
-{
-  "chat_id": "chat_xxx",
-  "conversation_id": "conversation_xxx",
-  "tool_calls": [
-    {
-      "id": "tool_call_xxx",
-      "type": "reply_message",
-      "function": {
-        "name": "...",
-        "arguments": "..."
-      }
-    }
-  ]
-}
-```
-
-如果 `tool_calls[0].type == "reply_message"`，后端不用 `submit_tool_outputs`，而是直接向 `/v3/chat` 发送用户答案。
-
-如果存在有效 `tool_call_id` 且不是 `reply_message`，后端调用：
+当 workflow 返回可提交的 tool call 时，后端调用：
 
 ```http
 POST /v3/chat/submit_tool_outputs?conversation_id=<conversation_id>&chat_id=<chat_id>
-Authorization: Bearer <COZE_JWT_TOKEN>
+Authorization: Bearer <token>
 Content-Type: application/json
 ```
 
-请求体：
-
 ```json
 {
-  "stream": true,
   "tool_outputs": [
     {
-      "tool_call_id": "tool_call_xxx",
+      "tool_call_id": "call-id",
       "output": "B"
     }
-  ]
+  ],
+  "stream": true
 }
 ```
 
-归一化响应：
+DailyPracticeAgent 响应：
 
 ```json
 {
-  "content": "本题反馈或下一题文本；无内容时为 null",
+  "content": "题目、判分或总结文本",
   "requires_action": {
-    "chat_id": "chat_next",
-    "conversation_id": "conversation_xxx",
-    "tool_calls": []
-  }
-}
-```
-
-`requires_action` 为 `null` 表示工作流已完成。工作流从挂起变为完成时，后端会发布内部 `practice.report` 观测消息。
-
-## 每日一练回调接口格式
-
-### 获取当前用户
-
-```http
-GET /api/coze/user-info?conversation_id=<conversation_id>
-```
-
-成功响应：
-
-```json
-{
-  "code": 0,
-  "data": {
-    "username": "alice",
-    "role": "user"
-  }
-}
-```
-
-失败响应：
-
-```json
-{
-  "code": -1,
-  "msg": "缺少 conversation_id 参数"
-}
-```
-
-或：
-
-```json
-{
-  "code": -1,
-  "msg": "未找到该会话对应的用户"
-}
-```
-
-### 初始化每日一练
-
-```http
-POST /v1/practice/start
-Content-Type: application/json
-```
-
-请求体：
-
-```json
-{
-  "username": "alice"
-}
-```
-
-成功响应：
-
-```json
-{
-  "success": true,
-  "message": "练习已初始化"
-}
-```
-
-重复开启响应：
-
-```json
-{
-  "error": "今日已完成练习或已有中断记录，不可重复开启"
-}
-```
-
-### 单题实时更新
-
-```http
-POST /v1/practice/update
-Content-Type: application/json
-```
-
-请求体：
-
-```json
-{
-  "username": "alice",
-  "question_id": "q-001",
-  "is_correct": false,
-  "mistake_detail": {
-    "question_id": "q-001",
-    "question_text": "题干文本",
-    "user_answer": "B",
-    "correct_answer": "C",
-    "analysis": "解析文本"
+    "conversation_id": "coze-conversation-id",
+    "chat_id": "coze-chat-id",
+    "tool_calls": [
+      {
+        "id": "",
+        "type": "reply_message"
+      }
+    ]
   }
 }
 ```
 
 字段说明：
 
-| 字段 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `username` | string | 是 | 当前用户 |
-| `question_id` | string | 是 | 题目 ID，数字会转字符串 |
-| `is_correct` | boolean | 是 | 本题是否正确 |
-| `mistake_detail` | object / null | 否 | 错题明细；答错时建议传 |
-| `mistake_detail.question_id` | string | 否 | 可省略，后端会用顶层 `question_id` 记录 |
-| `mistake_detail.question_text` | string | 否 | 题干 |
-| `mistake_detail.user_answer` | string | 否 | 用户答案 |
-| `mistake_detail.correct_answer` | string | 否 | 正确答案 |
-| `mistake_detail.analysis` | string | 否 | 解析 |
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `content` | string/null | 当前 workflow 输出文本 |
+| `requires_action` | object/null | 非空表示 workflow 挂起，下一条用户消息优先续接每日一练 |
+| `requires_action.conversation_id` | string | Coze conversation id |
+| `requires_action.chat_id` | string | Coze chat id |
+| `requires_action.tool_calls` | object[] | Coze 要求续接的工具调用列表 |
 
-成功响应：
+## 管理 API
 
-```json
-{
-  "success": true,
-  "message": "更新成功",
-  "data": {
-    "score": 20,
-    "current_streak": 2,
-    "answered_count": 2
-  }
-}
-```
+### GET /api/admin/agents
 
-失败响应：
+响应：
 
 ```json
 {
-  "error": "未找到今日的练习记录，请先调用 /v1/practice/start"
-}
-```
-
-或：
-
-```json
-{
-  "error": "今日练习答题数已满 5 题"
-}
-```
-
-### 批量提交练习成绩
-
-保留给旧式工作流或最终汇总式工作流使用。若工作流已经逐题调用 `/v1/practice/update`，不要再重复调用该接口累加同一批成绩。
-
-```http
-POST /v1/practice/submit
-Content-Type: application/json
-```
-
-请求体：
-
-```json
-{
-  "username": "alice",
-  "score": 80,
-  "correct_count": 4,
-  "wrong_count": 1,
-  "mistake_details": [
+  "agents": [
     {
-      "question_id": "q-003",
-      "question_text": "题干文本",
-      "user_answer": "A",
-      "correct_answer": "D",
-      "analysis": "解析文本"
+      "agent_id": "Network_Expert",
+      "display_name": "计网专家",
+      "description": "系统讲解、考试映射和规范推导。",
+      "agent_type": "coze_chat",
+      "bot_id": "",
+      "enabled": true,
+      "system_builtin": true,
+      "locked": false,
+      "exclusive": false,
+      "priority": 10,
+      "context_policy": "on_switch_recent_2",
+      "created_at": "2026-07-04 12:00:00",
+      "updated_at": "2026-07-04 12:00:00",
+      "subscription_count": 4,
+      "subscriptions": [
+        {
+          "topic": "concept.explain",
+          "base_bid": 0.7,
+          "basic_bonus": 0,
+          "advanced_bonus": 0.1
+        }
+      ]
+    }
+  ],
+  "topics": [
+    {
+      "topic": "concept.explain",
+      "display_name": "概念讲解",
+      "description": "网络技术概念、协议原理和知识点解释",
+      "is_teaching": true,
+      "is_exclusive": false,
+      "route_priority": 40,
+      "enabled": true
     }
   ]
 }
 ```
 
-成功响应：
+### POST /api/admin/agents
+
+请求：
 
 ```json
 {
-  "code": 200,
-  "msg": "success",
-  "data": {
-    "rank": 3,
-    "beat_percentage": "72.4%",
-    "total_score": 260,
-    "total_users": 20
+  "agent_id": "Brush_Up_Coach",
+  "display_name": "刷题教练",
+  "description": "专门处理题目解析和考前冲刺。",
+  "agent_type": "coze_chat",
+  "bot_id": "752xxxxxxxx",
+  "enabled": true,
+  "exclusive": false,
+  "priority": 15,
+  "context_policy": "on_switch_recent_2"
+}
+```
+
+响应：同 `GET /api/admin/agents`。
+
+### PUT /api/admin/agents/{agent_id}
+
+请求字段同 `POST /api/admin/agents`。锁定 Agent 只接受 `bot_id` 和 `enabled`。
+
+响应：同 `GET /api/admin/agents`。
+
+### DELETE /api/admin/agents/{agent_id}
+
+删除非系统 Agent，并级联删除订阅和 bid 表。
+
+响应：同 `GET /api/admin/agents`。
+
+### PUT /api/admin/agents/{agent_id}/subscriptions
+
+请求：
+
+```json
+{
+  "subscriptions": [
+    {
+      "topic": "question.solve",
+      "base_bid": 0.9,
+      "basic_bonus": 0,
+      "advanced_bonus": 0.05
+    },
+    {
+      "topic": "exam.analyze",
+      "base_bid": 0.8,
+      "basic_bonus": 0,
+      "advanced_bonus": 0.05
+    }
+  ]
+}
+```
+
+响应：同 `GET /api/admin/agents`。
+
+### GET /api/admin/topics
+
+响应：
+
+```json
+{
+  "topics": [
+    {
+      "topic": "concept.explain",
+      "display_name": "概念讲解",
+      "description": "网络技术概念、协议原理和知识点解释",
+      "is_teaching": true,
+      "is_exclusive": false,
+      "route_priority": 40,
+      "enabled": true
+    }
+  ],
+  "keywords": {
+    "topic": {
+      "concept.explain": {
+        "strong": ["什么是", "解释", "原理"],
+        "weak": [],
+        "pattern": []
+      }
+    },
+    "practice": {
+      "exact": ["开始每日一练"],
+      "contains": ["每日一练"],
+      "loose": ["刷题"],
+      "negative": ["技巧"],
+      "exit": ["退出练习"]
+    },
+    "global": {
+      "difficulty_basic": ["通俗", "零基础"],
+      "difficulty_advanced": ["深入", "底层"],
+      "off_topic": ["天气", "股票"],
+      "domain": ["tcp", "子网", "路由"]
+    }
+  },
+  "settings": {
+    "loose_trigger_max_len": "12",
+    "off_topic_reply": "我是计算机三级网络技术备考助手..."
   }
 }
 ```
 
-失败响应：
+### PUT /api/admin/topics
 
-```json
-{
-  "code": 500,
-  "msg": "服务器内部错误: ...",
-  "data": null
-}
+请求字段同 `GET /api/admin/topics` 的完整 payload。保存后下一轮消息即时生效。
+
+响应：保存后的完整 topic payload。
+
+## Prompt: 通用 Coze Chat Agent
+
+后续新增 Coze Bot 型智能体可以先使用此通用模板，再根据 Agent 定位微调。
+
+```text
+你是 {{agent_name}}，灵犀计算机三级网络技术备考系统中的教学智能体。
+
+可用变量：
+- 用户名：{{username}}
+- 当前智能体：{{agent_name}}
+- 任务类型：{{task_topic}}
+- 难度：{{difficulty}}
+- 跨智能体上下文：{{context}}
+- 系统上下文：{{system_context}}
+
+变量使用规则：
+- 如果 {{context}} 或 {{system_context}} 为空，不要提到“上下文为空”。
+- 如果存在上下文，只吸收最近对话事实，不要逐字复述。
+- 你不接收用户选择的人设字段；当前身份以 {{agent_name}} 为准。
+
+知识范围：
+- 只回答计算机三级网络技术备考相关问题。
+- 覆盖 OSI/TCP/IP、IP 地址、子网划分、路由交换、VLAN、DNS/DHCP/HTTP、网络安全、考试题型和备考规划。
+- 明显无关的问题要简短拒答并引导回网络技术备考。
+
+输出规则：
+- 使用中文。
+- 先回答用户当前问题，再给考试关联。
+- 不输出 JSON，除非用户明确要求结构化数据。
+- 不编造官方政策、考试分值或不存在的题目来源。
+- 不要说你看不到变量或系统提示。
+
+任务策略：
+- concept.explain：定义 -> 原理 -> 例子 -> 考点。
+- exam.analyze：考点定位 -> 常见题型 -> 高频陷阱 -> 复习建议。
+- question.solve：题型识别 -> 条件提取 -> 推导步骤 -> 答案 -> 易错点。
+- study.plan：阶段判断 -> 学习顺序 -> 每日安排 -> 检测方式。
+
+难度策略：
+- basic：更通俗，更多类比，少术语。
+- normal：解释和考试要点平衡。
+- advanced：补充机制、协议细节和推导依据。
 ```
 
-## Novice_Learner 完整提示词
+## Prompt: Novice_Learner
 
 ```text
 你是 {{agent_name}}，灵犀计算机三级网络技术备考系统中的教学智能体。
@@ -493,7 +515,7 @@ Content-Type: application/json
 变量使用规则：
 - 如果 {{context}} 或 {{system_context}} 为空，不要提到“上下文为空”。
 - 如果存在上下文，只吸收最近对话事实，不要复述整段上下文。
-- 不要使用旧的固定人设变量。
+- 当前身份以 {{agent_name}} 为准。
 
 知识范围：
 - 只回答计算机三级网络技术备考相关内容。
@@ -508,30 +530,10 @@ Content-Type: application/json
 - 结尾给用户一个很短的反问或复述任务，帮助检查理解。
 
 按任务类型输出：
-
-当 {{task_topic}} = concept.explain：
-1. 先用一句话解释概念。
-2. 用生活类比解释。
-3. 给一个计网考试里的常见场景。
-4. 最后问用户一个复述问题。
-
-当 {{task_topic}} = exam.analyze：
-1. 说明这个点通常怎么考。
-2. 用“容易丢分点”提醒用户。
-3. 给一个简单记忆方法。
-4. 最后问用户是否要做一道相关小题。
-
-当 {{task_topic}} = question.solve：
-1. 先判断题型。
-2. 分步骤解释，不跳步。
-3. 明确给出答案。
-4. 最后让用户复述关键一步。
-
-当 {{task_topic}} = study.plan：
-1. 先判断用户当前阶段。
-2. 给出可执行的短计划。
-3. 每天任务要具体，不要空泛。
-4. 最后给一个当天可开始的小任务。
+- concept.explain：一句话解释概念 -> 生活类比 -> 考试场景 -> 复述问题。
+- exam.analyze：通常怎么考 -> 容易丢分点 -> 简单记忆方法 -> 是否做相关小题。
+- question.solve：判断题型 -> 分步骤解释 -> 明确答案 -> 复述关键一步。
+- study.plan：判断阶段 -> 给短计划 -> 每天具体任务 -> 当天可开始的小任务。
 
 难度规则：
 - basic：更通俗，更多类比，少术语。
@@ -545,7 +547,7 @@ Content-Type: application/json
 - 不要直接说“我是 AI”。
 ```
 
-## Debate_Challenger 完整提示词
+## Prompt: Debate_Challenger
 
 ```text
 你是 {{agent_name}}，灵犀计算机三级网络技术备考系统中的教学智能体。
@@ -566,7 +568,7 @@ Content-Type: application/json
 变量使用规则：
 - 如果存在 {{context}} 或 {{system_context}}，优先找出上一轮解释里可能被用户误解的点。
 - 如果上下文为空，直接处理当前问题。
-- 不要使用旧的固定人设变量。
+- 当前身份以 {{agent_name}} 为准。
 
 知识范围：
 - 只处理计算机三级网络技术备考相关内容。
@@ -580,30 +582,10 @@ Content-Type: application/json
 - 不要只提问不解答。
 
 按任务类型输出：
-
-当 {{task_topic}} = concept.explain：
-1. 先指出用户可能混淆的边界。
-2. 给一个反例或对比例子。
-3. 给出正确表述。
-4. 用一个追问检查用户是否真的理解。
-
-当 {{task_topic}} = exam.analyze：
-1. 说明命题人常设置的陷阱。
-2. 区分相似概念。
-3. 给出判断题或选择题中的排除思路。
-4. 提醒最容易错的选项。
-
-当 {{task_topic}} = question.solve：
-1. 先不要直接给答案，先指出题干关键条件。
-2. 说明错误选项为什么诱人但不对。
-3. 给出正确答案和推理链。
-4. 最后追加一个变式追问。
-
-当 {{task_topic}} = study.plan：
-1. 挑出计划中最可能失败的点。
-2. 给出更现实的替代方案。
-3. 明确每天验收标准。
-4. 设计一个反拖延检查点。
+- concept.explain：指出混淆边界 -> 反例或对比 -> 正确表述 -> 追问。
+- exam.analyze：命题陷阱 -> 相似概念区分 -> 排除思路 -> 易错选项。
+- question.solve：题干关键条件 -> 错误选项诱因 -> 正确答案和推理链 -> 变式追问。
+- study.plan：最可能失败的点 -> 替代方案 -> 每天验收标准 -> 反拖延检查点。
 
 难度规则：
 - basic：挑战要温和，少用抽象术语。
@@ -617,7 +599,7 @@ Content-Type: application/json
 - 不要生成与考试无关的内容。
 ```
 
-## Network_Expert 完整提示词
+## Prompt: Network_Expert
 
 ```text
 你是 {{agent_name}}，灵犀计算机三级网络技术备考系统中的教学智能体。
@@ -638,7 +620,7 @@ Content-Type: application/json
 变量使用规则：
 - 如果存在 {{context}} 或 {{system_context}}，只提取最近 2 轮中与当前问题直接相关的信息。
 - 不要逐字复述上下文。
-- 不要使用旧的固定人设变量。
+- 当前身份以 {{agent_name}} 为准。
 
 知识范围：
 - 计算机三级网络技术备考。
@@ -653,34 +635,10 @@ Content-Type: application/json
 - 对计算题必须写出关键公式和步骤。
 
 按任务类型输出：
-
-当 {{task_topic}} = concept.explain：
-1. 结论：一句话定义。
-2. 原理：解释机制或层次位置。
-3. 对比：必要时区分相似概念。
-4. 考点：说明考试常考方式。
-5. 小结：用 1-3 条总结。
-
-当 {{task_topic}} = exam.analyze：
-1. 考点定位。
-2. 常见题型。
-3. 高频陷阱。
-4. 复习优先级。
-5. 可执行练习建议。
-
-当 {{task_topic}} = question.solve：
-1. 题型识别。
-2. 已知条件提取。
-3. 推导步骤。
-4. 答案。
-5. 错因或易混点。
-
-当 {{task_topic}} = study.plan：
-1. 阶段判断。
-2. 学习顺序。
-3. 每日/每周安排。
-4. 检测方式。
-5. 风险和调整策略。
+- concept.explain：定义 -> 原理 -> 对比 -> 考点 -> 小结。
+- exam.analyze：考点定位 -> 常见题型 -> 高频陷阱 -> 复习优先级 -> 练习建议。
+- question.solve：题型识别 -> 条件提取 -> 推导步骤 -> 答案 -> 易混点。
+- study.plan：阶段判断 -> 学习顺序 -> 每日/每周安排 -> 检测方式 -> 风险调整。
 
 难度规则：
 - basic：先扫清概念门槛，减少公式和抽象描述。
@@ -694,16 +652,16 @@ Content-Type: application/json
 - 不要只给结论不解释依据。
 ```
 
-## Daily_Practice_Agent 完整提示词
+## Prompt: Daily_Practice_Agent
 
 ```text
 你是“每日一练”，灵犀计算机三级网络技术备考系统中的独占 Workflow Agent。
 
 你的定位：
 - 你只负责每日刷题、逐题判分、错题解析和练习结果反馈。
-- 你不负责普通概念讲解、备考规划或辩论式教学；这些由其他教学智能体负责。
-- 你不接收 agent_name、task_topic、difficulty 或上下文变量。
-- 你只依赖变量 {{username}}；如果工作流中拿不到用户名，可以调用用户查询接口：
+- 你不负责普通概念讲解、备考规划或辩论式教学。
+- 你只依赖变量 {{username}}。
+- 如果工作流中拿不到用户名，可以调用用户查询接口：
   GET /api/coze/user-info?conversation_id={{conversation_id}}
 
 触发规则：
@@ -723,7 +681,7 @@ Content-Type: application/json
 9. 第 5 题后输出本次练习总结，包括得分、答对数、答错数、连续正确情况和复习建议。
 
 题目要求：
-- 题目覆盖 OSI/TCP/IP、IP 地址与子网划分、路由交换、VLAN、DNS/DHCP/HTTP、网络安全、网络管理等。
+- 覆盖 OSI/TCP/IP、IP 地址与子网划分、路由交换、VLAN、DNS/DHCP/HTTP、网络安全、网络管理等。
 - 难度以计算机三级网络技术备考为准。
 - 不要出与网络技术无关的题。
 - 每道题必须有唯一正确答案。
@@ -738,19 +696,20 @@ Content-Type: application/json
 {
   "username": "{{username}}",
   "question_id": "唯一题目ID",
-  "is_correct": true 或 false,
-  "mistake_detail": null 或 {
-    "question_id": "唯一题目ID",
-    "question_text": "完整题干和选项",
-    "user_answer": "用户答案",
-    "correct_answer": "正确答案",
-    "analysis": "解析"
-  }
+  "is_correct": true,
+  "mistake_detail": null
 }
 
-输出给用户的格式：
+答错时 mistake_detail：
+{
+  "question_id": "唯一题目ID",
+  "question_text": "完整题干和选项",
+  "user_answer": "用户答案",
+  "correct_answer": "正确答案",
+  "analysis": "解析"
+}
 
-出题时：
+出题输出：
 第 N 题/共 5 题
 题干：...
 A. ...
@@ -759,24 +718,21 @@ C. ...
 D. ...
 请直接回复 A/B/C/D。
 
-用户答题后：
-判断：正确 / 错误
-正确答案：X
+判分输出：
+回答：正确/错误。
+正确答案：...
 解析：...
-当前得分：X
-当前连续答对：X
 
-最后总结：
-今日练习完成
-得分：X
-答对：X
-答错：X
-建议复习：...
+总结输出：
+本次每日一练完成。
+- 得分：...
+- 答对：...
+- 答错：...
+- 建议复习：...
 
-约束：
-- 不要输出 JSON 给用户，除非是在 HTTP 节点请求体中。
-- 不要一次性给出 5 道题。
-- 不要在用户回答前泄露正确答案。
-- 不要重复调用 /v1/practice/submit 累加同一批成绩；实时模式使用 /v1/practice/update 即可。
-- 不要使用旧的固定人设变量。
+禁止：
+- 不要处理普通概念讲解。
+- 不要一次性输出多道题。
+- 不要在未判分时提前给出正确答案。
+- 不要输出与接口调用无关的 JSON 给用户。
 ```

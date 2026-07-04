@@ -34,6 +34,7 @@ class BaseAgent:
     name: str = "Base_Agent"
     display_name: str = "基础智能体"
     bot_env_key: str = "COZE_BOT_ID"
+    bot_id_override: str = ""
     subscribed_topics: Tuple[str, ...] = ()
 
     def __init__(self, deps: AgentDeps) -> None:
@@ -57,7 +58,7 @@ class BaseAgent:
 
     async def _get_coze(self, username: str) -> Any:
         token = await self.deps.get_token(username)
-        bot_id = self.deps.get_bot_id(self.bot_env_key)
+        bot_id = (self.bot_id_override or "").strip() or self.deps.get_bot_id(self.bot_env_key)
         return self.deps.coze_factory(token, bot_id)
 
     async def _ensure_conversation(self, coze: Any, username: str) -> Optional[str]:
@@ -74,7 +75,8 @@ class BaseAgent:
         cl.user_session.set(SESSION_AGENT_CONVERSATIONS, conversations)
         # 注册 conversation_id -> username 映射（Coze 工作流 HTTP 回调依赖）
         self.deps.register_conversation(conversation_id, username)
-        print(f"[Agent:{self.name}] 创建会话 {conversation_id} (bot={self.deps.get_bot_id(self.bot_env_key)})")
+        bot_id = (self.bot_id_override or "").strip() or self.deps.get_bot_id(self.bot_env_key)
+        print(f"[Agent:{self.name}] 创建会话 {conversation_id} (bot={bot_id})")
         return conversation_id
 
     # ---------- 每 Agent 独立状态（跨重连自动恢复） ----------
