@@ -1,0 +1,37 @@
+services:
+  lingxi-backend:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    container_name: lingxi-chat
+    ports:
+      - "${LINGXI_PORT:-8123}:8000"
+    environment:
+      CHAINLIT_AUTH_SECRET: ${CHAINLIT_AUTH_SECRET:?Set CHAINLIT_AUTH_SECRET in .env}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+      COZE_BASE_URL: ${COZE_BASE_URL:-https://api.coze.cn}
+      COZE_BOT_ID: ${COZE_BOT_ID:-}
+      COZE_JWT_TOKEN: ${COZE_JWT_TOKEN:-}
+      COZE_JWT_EXPIRES_AT: ${COZE_JWT_EXPIRES_AT:-}
+      LINGXI_DB_PATH: /app/backend/data/chainlit.db
+    volumes:
+      - ./data:/app/backend/data
+      - ./public:/app/backend/public
+    restart: unless-stopped
+    networks:
+      - lingxi-network
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python - <<'PY'\nimport urllib.request\nurllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\nPY"
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  lingxi-network:
+    driver: bridge

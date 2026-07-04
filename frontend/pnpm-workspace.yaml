@@ -1,0 +1,4 @@
+packages:
+  - .
+  - libs/react-client
+  - libs/copilot

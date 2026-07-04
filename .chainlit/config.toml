@@ -29,6 +29,9 @@ unsafe_allow_html = false
 # Process and display mathematical expressions. This can clash with "$" characters in messages.
 latex = false
 
+# Enable rendering of user messages markdown
+user_message_markdown = true
+
 # Autoscroll new user messages at the top of the window
 user_message_autoscroll = true
 
@@ -62,8 +65,7 @@ reaction_on_message_received = false
     #    accept = ["image/*", "audio/*", "video/*"]
     # 3. For specific file extensions:
     #    accept = { "application/octet-stream" = [".xyz", ".pdb"] }
-    # Note: Using "*/*" is not recommended as it may cause browser warnings
-    accept = ["*/*"]
+    accept = ["image/*", "audio/*", "video/*", "text/*", "application/pdf", "application/json"]
     max_files = 20
     max_size_mb = 500
 
@@ -92,23 +94,17 @@ reaction_on_message_received = false
 
 [UI]
 # Name of the assistant.
-name = "计算机三级网络小助手"
+name = "Assistant"
 
 # default_theme = "dark"
 
 # Force a specific language for all users (e.g., "en-US", "he-IL", "fr-FR")
 # If not set, the browser's language will be used
-language = "zh-CN"
-
-# Primary color for the UI (logo purple: #9242eb)
-primary_color = "#9242eb"
-
-# Custom CSS to apply the purple theme
-custom_css = "/public/theme.css"
+# language = "en-US"
 
 # layout = "wide"
 
-default_sidebar_state = "open"
+# default_sidebar_state = "open"  # Options: "open", "closed", "hidden"
 
 # Chat settings display location: "message_composer" (default) or "sidebar" (header)
 # chat_settings_location = "message_composer"
@@ -125,22 +121,8 @@ confirm_new_chat = true
 # Chain of Thought (CoT) display mode. Can be "hidden", "tool_call" or "full".
 cot = "full"
 
-# Specify a CSS file that can be used to customize the user interface.
-# The CSS file can be served from the public directory or via an external link.
-# custom_css = "/public/test.css"
-
-# Specify additional attributes for a custom CSS file
-# custom_css_attributes = "media=\"print\""
-
-# Specify a JavaScript file that can be used to customize the user interface.
-# The JavaScript file can be served from the public directory.
-custom_js = "/public/favicon.js"
-
 # The style of alert boxes. Can be "classic" or "modern".
 alert_style = "classic"
-
-# Specify additional attributes for custom JS file
-# custom_js_attributes = "async type = \"module\""
 
 # Custom login page image, relative to public directory or external URL
 # login_page_image = "/public/custom-background.jpg"
@@ -156,10 +138,13 @@ alert_style = "classic"
 # custom_meta_image_url = "https://chainlit-cloud.s3.eu-west-3.amazonaws.com/logo/chainlit_banner.png"
 
 # Load assistant logo directly from URL.
-logo_file_url = "/public/logo_backup.svg"
+logo_file_url = ""
 
 # Load assistant avatar image directly from URL.
-default_avatar_file_url = "/public/logo_backup.svg"
+default_avatar_file_url = ""
+
+# Avatar size in pixels (default: 20).
+# avatar_size = 20
 
 # Specify a custom build directory for the frontend.
 # This can be used to customize the frontend code.
@@ -175,4 +160,4 @@ default_avatar_file_url = "/public/logo_backup.svg"
 #     target = "_blank" (default)  # Optional: "_self", "_parent", "_top".
 
 [meta]
-generated_by = "2.9.6"
+generated_by = "2.11.1"
