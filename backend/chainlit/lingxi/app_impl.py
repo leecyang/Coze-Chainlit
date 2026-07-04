@@ -903,14 +903,14 @@ class CozeAPI:
         if conversation_id:
             params["conversation_id"] = conversation_id
 
-        # 从 kwargs 中获取可选的 target_role，未选择时使用默认人设
-        # （练习 Agent 不传该参数，保持发给旧工作流 Bot 的载荷与改造前一致）
-        target_role = kwargs.get("target_role", "") or DEFAULT_PERSONA
-
-        custom_vars = {
-            "username": user_id,
-            "target_role": target_role
-        }
+        agent_name = kwargs.get("agent_name")
+        custom_vars = {"username": user_id}
+        if agent_name:
+            custom_vars["agent_name"] = agent_name
+        else:
+            # 兼容旧工作流 Bot：练习 Agent 不传 agent_name/target_role，
+            # 这里仍按改造前载荷注入默认 target_role。
+            custom_vars["target_role"] = kwargs.get("target_role", "") or DEFAULT_PERSONA
         # 教学 Agent 附加的任务上下文变量（task_topic / difficulty 等），
         # Coze 容忍提示词中未声明的 custom_variables
         extra_vars = kwargs.get("extra_vars")

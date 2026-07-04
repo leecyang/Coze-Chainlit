@@ -55,19 +55,27 @@ class TeachingAgent(BaseAgent):
         conversation_id = await self._ensure_conversation(coze, username)
         if not conversation_id:
             return {"content": None, "requires_action": None}
-        # target_role 沿用旧变量名传入本 Agent 的固定人设显示名：
-        # 新建的专属 Bot 可以不用它；降级模式（回退到旧单 Bot）下
-        # 旧提示词里的 {{target_role}} if-else 仍按此值工作。
+
+        extra_vars = {
+            "task_topic": msg.topic,
+            "difficulty": msg.payload.get("difficulty", "normal"),
+        }
+        context = msg.payload.get("context") or {}
+        last_agent = context.get("last_agent")
+        if last_agent and last_agent != self.name:
+            recent_turns = context.get("recent_turns") or []
+            if recent_turns:
+                recent_context = "\n".join(str(item) for item in recent_turns[-2:])
+                extra_vars["context"] = recent_context
+                extra_vars["system_context"] = recent_context
+
         return await coze.chat_stream(
             conversation_id,
             username,
             msg.payload.get("user_message", ""),
             cl_msg,
-            target_role=self.display_name,
-            extra_vars={
-                "task_topic": msg.topic,
-                "difficulty": msg.payload.get("difficulty", "normal"),
-            },
+            agent_name=self.display_name,
+            extra_vars=extra_vars,
         )
 
 

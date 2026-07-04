@@ -191,6 +191,7 @@ class MultiAgentPipeline:
         history: List[str] = cl.user_session.get(SESSION_RECENT_HISTORY) or []
         context = {
             "recent_summary": "\n".join(history),
+            "recent_turns": history[-2:],
             "last_topic": cl.user_session.get(SESSION_LAST_TOPIC),
             "last_agent": cl.user_session.get(SESSION_LAST_AGENT),
         }

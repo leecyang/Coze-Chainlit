@@ -56,6 +56,7 @@ class Message:
             "user_message": str,
             "context": {
                 "recent_summary": str,   # 近几轮对话摘要（一行一轮）
+                "recent_turns": list[str], # 最近 2 轮，跨 Agent 切换时注入 Coze
                 "last_topic": str | None,
                 "last_agent": str | None,
             },
