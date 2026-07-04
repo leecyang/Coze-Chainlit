@@ -12,9 +12,8 @@ import chainlit as cl
 from chainlit.server import app
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 from chainlit.types import ThreadFilter, Pagination
-from fastapi import Request
+from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
-from fastapi import HTTPException
 from chainlit.auth.cookie import get_token_from_cookies
 from chainlit.auth.jwt import decode_jwt
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -2215,12 +2214,13 @@ async def get_admin_stats(request: Request):
 
 
 @app.get("/api/admin/overview")
-async def get_admin_overview(request: Request, range: str = "7d"):
+async def get_admin_overview(request: Request):
     """运营后台总览数据。"""
     if not verify_admin_from_request(request):
         return JSONResponse({"error": "未授权"}, status_code=403)
     _ensure_assignment_records_table()
-    days = {"7d": 7, "30d": 30}.get(range, 7)
+    range_value = (request.query_params.get("range") or "7d").strip()
+    days = {"7d": 7, "30d": 30}.get(range_value, 7)
     admin_users = [u for u, d in users_db.items() if d.get("role") == "admin"]
     placeholders = ",".join("?" for _ in admin_users)
     admin_filter = f"AND username NOT IN ({placeholders})" if admin_users else ""
@@ -2342,7 +2342,7 @@ async def get_admin_overview(request: Request, range: str = "7d"):
 
         token_health = await check_token_health()
         return JSONResponse({
-            "range": range,
+            "range": range_value,
             "kpis": {
                 "total_users": total_users,
                 "normal_users": normal_users,
@@ -3626,10 +3626,6 @@ async def _ensure_practice_tables():
         print(f"[Practice] 建表异常（可忽略如表已存在）: {e}")
     finally:
         await engine.dispose()
-
-
-from fastapi import HTTPException
-from datetime import datetime
 
 @app.post("/v1/practice/start")
 async def start_practice(body: PracticeStartRequest):
