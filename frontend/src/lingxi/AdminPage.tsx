@@ -122,6 +122,16 @@ const emptyTopicsPayload: TopicsPayload = {
   keywords: { topic: {}, practice: {}, global: {} },
   settings: {}
 };
+const emptyKpis: AdminOverview['kpis'] = {
+  total_users: 0,
+  normal_users: 0,
+  active_today: 0,
+  total_conversations: 0,
+  total_messages: 0,
+  practice_sessions: 0,
+  mistake_count: 0,
+  assignment_count: 0
+};
 
 function makeBlankAgent(): AgentDefinition {
   return {
@@ -159,6 +169,62 @@ const emptyLeaderboardStats = {
   avg_score: 0,
   today_sessions: 0
 };
+
+function listOrEmpty<T>(value: T[] | undefined | null): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizePaginated<T>(
+  data: Partial<Paginated<T>> | null | undefined,
+  fallbackItems?: T[]
+): Paginated<T> {
+  return {
+    items: listOrEmpty(data?.items).length ? listOrEmpty(data?.items) : listOrEmpty(fallbackItems),
+    total: Number(data?.total || 0),
+    page: Number(data?.page || 1),
+    page_size: Number(data?.page_size || pageSize),
+    total_pages: Number(data?.total_pages || 0)
+  };
+}
+
+function normalizeAgentsPayload(data: Partial<AgentsPayload> | null | undefined): AgentsPayload {
+  return {
+    agents: listOrEmpty(data?.agents),
+    topics: listOrEmpty(data?.topics)
+  };
+}
+
+function normalizeTopicsPayload(data: Partial<TopicsPayload> | null | undefined): TopicsPayload {
+  return {
+    topics: listOrEmpty(data?.topics),
+    keywords: {
+      topic: data?.keywords?.topic || {},
+      practice: data?.keywords?.practice || {},
+      global: data?.keywords?.global || {}
+    },
+    settings: data?.settings || {}
+  };
+}
+
+function normalizeOverview(data: Partial<AdminOverview> | null | undefined, range: string): AdminOverview {
+  return {
+    range: data?.range || range,
+    kpis: { ...emptyKpis, ...(data?.kpis || {}) },
+    daily: listOrEmpty(data?.daily),
+    persona_stats: listOrEmpty(data?.persona_stats),
+    today_active_users: listOrEmpty(data?.today_active_users),
+    top_active_users: listOrEmpty(data?.top_active_users),
+    conversation_depth: data?.conversation_depth || {},
+    active_user_proportion: {
+      active: 0,
+      total: 0,
+      percent: 0,
+      ...(data?.active_user_proportion || {})
+    },
+    recent_activity: listOrEmpty(data?.recent_activity),
+    token_health: data?.token_health
+  };
+}
 
 function query(params: Record<string, string | number | undefined>) {
   const search = new URLSearchParams();
@@ -381,7 +447,7 @@ export default function AdminPage() {
     const data = await lingxiFetch<AdminOverview>(
       `/api/admin/overview${query({ range: overviewRange })}`
     );
-    setOverview(data);
+    setOverview(normalizeOverview(data, overviewRange));
   };
 
   const loadUsers = async (page = users.page) => {
@@ -393,7 +459,7 @@ export default function AdminPage() {
         page_size: pageSize
       })}`
     );
-    setUsers({ ...data, items: data.items || data.users || [], total_pages: data.total_pages || 0 });
+    setUsers(normalizePaginated(data, data.users));
   };
 
   const loadConversations = async (page = conversations.page) => {
@@ -405,7 +471,7 @@ export default function AdminPage() {
         page_size: pageSize
       })}`
     );
-    setConversations({ ...data, items: data.items || data.conversations || [], total_pages: data.total_pages || 0 });
+    setConversations(normalizePaginated(data, data.conversations));
   };
 
   const loadLearning = async () => {
@@ -431,47 +497,40 @@ export default function AdminPage() {
       });
     }
     if (practiceData.status === 'fulfilled') {
-      setRecords({ ...practiceData.value, items: practiceData.value.items || [], total_pages: practiceData.value.total_pages || 0 });
+      setRecords(normalizePaginated(practiceData.value));
     }
     if (mistakeData.status === 'fulfilled') {
-      setMistakes({ ...mistakeData.value, items: mistakeData.value.items || [], total_pages: mistakeData.value.total_pages || 0 });
+      setMistakes(normalizePaginated(mistakeData.value));
     }
     if (assignmentData.status === 'fulfilled') {
-      setAssignments({ ...assignmentData.value, items: assignmentData.value.items || [], total_pages: assignmentData.value.total_pages || 0 });
+      setAssignments(normalizePaginated(assignmentData.value));
     }
   };
 
   const loadConfig = async () => {
     const data = await lingxiFetch<AdminConfig>('/api/admin/config');
-    setConfig(data);
-    setConfigDraft({ ...data, service_token: '' });
+    setConfig(data || {});
+    setConfigDraft({ ...(data || {}), service_token: '' });
   };
 
   const loadAgents = async () => {
     const data = await lingxiFetch<AgentsPayload>('/api/admin/agents');
-    setAgentsPayload(data);
-    const selected = data.agents.find((agent) => agent.agent_id === selectedAgentId) || data.agents[0];
+    const payload = normalizeAgentsPayload(data);
+    setAgentsPayload(payload);
+    const selected = payload.agents.find((agent) => agent.agent_id === selectedAgentId) || payload.agents[0];
     if (selected) applyAgentSelection(selected);
   };
 
   const loadTopics = async () => {
     const data = await lingxiFetch<TopicsPayload>('/api/admin/topics');
-    setTopicsPayload({
-      topics: data.topics || [],
-      keywords: {
-        topic: data.keywords?.topic || {},
-        practice: data.keywords?.practice || {},
-        global: data.keywords?.global || {}
-      },
-      settings: data.settings || {}
-    });
+    setTopicsPayload(normalizeTopicsPayload(data));
   };
 
   const loadAudit = async (page = audit.page) => {
     const data = await lingxiFetch<Paginated<AdminActivity>>(
       `/api/admin/audit${query({ target: auditTarget, page, page_size: pageSize })}`
     );
-    setAudit({ ...data, items: data.items || [], total_pages: data.total_pages || 0 });
+    setAudit(normalizePaginated(data));
   };
 
   const loadInitial = async () => {
@@ -700,8 +759,9 @@ export default function AdminPage() {
           body: JSON.stringify(payload)
         }
       );
-      setAgentsPayload(data);
-      const selected = data.agents.find((agent) => agent.agent_id === payload.agent_id);
+      const nextPayload = normalizeAgentsPayload(data);
+      setAgentsPayload(nextPayload);
+      const selected = nextPayload.agents.find((agent) => agent.agent_id === payload.agent_id);
       if (selected) applyAgentSelection(selected);
       await Promise.all([loadAudit(1), loadOverview()]);
     }, selectedAgentId ? '智能体已保存' : '智能体已注册');
@@ -717,8 +777,9 @@ export default function AdminPage() {
           body: JSON.stringify({ subscriptions: Object.values(subscriptionDraft) })
         }
       );
-      setAgentsPayload(data);
-      const selected = data.agents.find((agent) => agent.agent_id === selectedAgentId);
+      const payload = normalizeAgentsPayload(data);
+      setAgentsPayload(payload);
+      const selected = payload.agents.find((agent) => agent.agent_id === selectedAgentId);
       if (selected) applyAgentSelection(selected);
       await Promise.all([loadAudit(1), loadOverview()]);
     }, '订阅与 bid 表已保存');
@@ -735,8 +796,9 @@ export default function AdminPage() {
           `/api/admin/agents/${encodeURIComponent(selectedAgentId)}`,
           { method: 'DELETE' }
         );
-        setAgentsPayload(data);
-        const selected = data.agents[0];
+        const payload = normalizeAgentsPayload(data);
+        setAgentsPayload(payload);
+        const selected = payload.agents[0];
         if (selected) applyAgentSelection(selected);
         else startNewAgent();
         await Promise.all([loadAudit(1), loadOverview()]);
@@ -750,7 +812,7 @@ export default function AdminPage() {
         method: 'PUT',
         body: JSON.stringify(topicsPayload)
       });
-      setTopicsPayload(data);
+      setTopicsPayload(normalizeTopicsPayload(data));
       await Promise.all([loadAgents(), loadAudit(1), loadOverview()]);
     }, '路由 topic 与词表已保存');
   };

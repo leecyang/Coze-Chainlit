@@ -37,7 +37,13 @@ const authProxy = () => {
 
 export default defineConfig({
   build: {
-    sourcemap: true
+    sourcemap: process.env.VITE_BUILD_SOURCEMAP === 'true',
+    rollupOptions: {
+      onwarn(warning, warn) {
+        if (warning.code === 'SOURCEMAP_ERROR') return;
+        warn(warning);
+      }
+    }
   },
   server: {
     headers: {

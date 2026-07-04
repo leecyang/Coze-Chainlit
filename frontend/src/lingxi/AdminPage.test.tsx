@@ -11,7 +11,12 @@ vi.mock('./api', () => ({
 
 const page = { items: [], total: 0, page: 1, page_size: 12, total_pages: 0 };
 
-function mockFetch() {
+function mockFetch(
+  overrides: {
+    agents?: unknown;
+    topics?: unknown;
+  } = {}
+) {
   vi.mocked(lingxiFetch).mockImplementation((url: string, options?: RequestInit) => {
     if (url === '/api/admin/auth/check') {
       return Promise.resolve({ is_admin: true, username: 'yang' });
@@ -49,13 +54,13 @@ function mockFetch() {
     }
     if (url.startsWith('/api/admin/learning')) return Promise.resolve(page);
     if (url === '/api/admin/agents') {
-      return Promise.resolve({
+      return Promise.resolve(overrides.agents || {
         agents: [],
         topics: []
       });
     }
     if (url === '/api/admin/topics') {
-      return Promise.resolve({
+      return Promise.resolve(overrides.topics || {
         topics: [],
         keywords: { topic: {}, practice: {}, global: {} },
         settings: {}
@@ -96,6 +101,26 @@ describe('AdminPage', () => {
     expect(await screen.findByText('灵犀管理后台')).toBeTruthy();
     expect(screen.getByText('总用户')).toBeTruthy();
     expect(screen.getByText('暂无趋势数据')).toBeTruthy();
+  });
+
+  it('renders when agent and topic payloads omit array fields', async () => {
+    vi.clearAllMocks();
+    mockFetch({ agents: {}, topics: {} });
+
+    render(
+      <MemoryRouter>
+        <AdminPage />
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByText('灵犀管理后台')).toBeTruthy();
+    const agentsTab = screen.getAllByRole('tab', { name: '智能体' })[0];
+    fireEvent.mouseDown(agentsTab);
+    fireEvent.mouseUp(agentsTab);
+    fireEvent.click(agentsTab);
+
+    expect(await screen.findByText('暂无智能体，请先注册')).toBeTruthy();
+    expect(screen.getByText('暂无 topic，请先维护路由词表')).toBeTruthy();
   });
 
   it('does not overwrite the service token when config token input is empty', async () => {

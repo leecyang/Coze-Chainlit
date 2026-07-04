@@ -2,6 +2,7 @@ FROM node:20-bookworm-slim AS frontend-builder
 
 WORKDIR /src/frontend
 ENV CYPRESS_INSTALL_BINARY=0
+ENV NODE_OPTIONS=--max-old-space-size=4096
 
 RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
 

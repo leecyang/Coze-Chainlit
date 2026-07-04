@@ -18,22 +18,31 @@ ACTIVE_CONFIG_KEYS: Set[str] = {
 
 def resolve_db_path() -> str:
     """Resolve the SQLite path for Docker and local development."""
-    explicit_path = os.getenv("LINGXI_DB_PATH")
-    if explicit_path:
-        return explicit_path
-    if os.path.exists("/app/data"):
-        return "/app/data/chainlit.db"
-
     backend_dir = Path(__file__).resolve().parents[2]
     backend_data_db = backend_dir / "data" / "chainlit.db"
-    backend_data_dir = backend_dir / "data"
-    if backend_data_db.exists():
-        return str(backend_data_db)
-    if backend_data_dir.exists():
+
+    explicit_path = os.getenv("LINGXI_DB_PATH")
+    if explicit_path:
+        path = Path(explicit_path)
+        if not path.is_absolute():
+            path = backend_dir / path
+        return str(path)
+
+    docker_backend_db = Path("/app/backend/data/chainlit.db")
+    docker_backend_dir = docker_backend_db.parent
+    if docker_backend_db.exists() or docker_backend_dir.exists():
+        return str(docker_backend_db)
+
+    legacy_docker_db = Path("/app/data/chainlit.db")
+    legacy_docker_dir = legacy_docker_db.parent
+    if legacy_docker_db.exists() or legacy_docker_dir.exists():
+        return str(legacy_docker_db)
+
+    if backend_data_db.exists() or backend_data_db.parent.exists():
         return str(backend_data_db)
 
-    if os.path.exists("data/chainlit.db"):
-        return "data/chainlit.db"
-    if os.path.exists("data"):
-        return "data/chainlit.db"
+    legacy_chainlit_db = backend_dir / ".chainlit" / "chainlit.db"
+    if legacy_chainlit_db.exists():
+        return str(legacy_chainlit_db)
+
     return str(backend_data_db)

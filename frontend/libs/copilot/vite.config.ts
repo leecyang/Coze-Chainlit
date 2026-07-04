@@ -9,6 +9,10 @@ export default defineConfig({
   plugins: [react(), tsconfigPaths(), svgr()],
   build: {
     rollupOptions: {
+      onwarn(warning, warn) {
+        if (warning.code === 'SOURCEMAP_ERROR') return;
+        warn(warning);
+      },
       input: {
         copilot: path.resolve(__dirname, 'index.tsx')
       },
