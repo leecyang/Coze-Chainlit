@@ -44,6 +44,7 @@ users/
 .vscode/
 .idea/
 .agent/
+.claude/
 .files/
 .kiro/
 *.swp
