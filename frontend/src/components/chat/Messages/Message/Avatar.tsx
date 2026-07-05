@@ -18,6 +18,8 @@ import {
   TooltipTrigger
 } from '@/components/ui/tooltip';
 
+const DEFAULT_AVATAR_SIZE = 32;
+
 interface Props {
   author?: string;
   hide?: boolean;
@@ -44,42 +46,47 @@ const MessageAvatar = ({ author, hide, isError, iconName }: Props) => {
     return apiClient?.buildEndpoint(`/avatars/${author || 'default'}`);
   }, [apiClient, selectedChatProfile, config, author]);
 
-  const avatarSize = config?.ui?.avatar_size;
-  const sizeStyle = avatarSize
-    ? { width: `${avatarSize}px`, height: `${avatarSize}px` }
-    : undefined;
+  const avatarSize = config?.ui?.avatar_size ?? DEFAULT_AVATAR_SIZE;
+  const sizeStyle = { width: `${avatarSize}px`, height: `${avatarSize}px` };
+  const fallbackLabel = (author || config?.ui?.name || 'AI')
+    .trim()
+    .charAt(0)
+    .toUpperCase();
 
   if (isError) {
     return (
-      <span className={cn('inline-block', hide && 'invisible')}>
-        <AlertCircle className="h-5 w-5 fill-destructive mt-[5px] text-destructive-foreground" />
+      <span className={cn('inline-flex shrink-0', hide && 'invisible')}>
+        <AlertCircle
+          className="mt-[3px] fill-destructive text-destructive-foreground"
+          style={sizeStyle}
+        />
       </span>
     );
   }
 
   // Render icon or avatar based on iconName
   const avatarContent = iconName ? (
-    <span className="inline-flex mt-[3px]">
-      <Icon name={iconName} size={avatarSize ?? 20} /> {/* 20 => h-5 w-5 */}
-    </span>
-  ) : (
-    <Avatar
-      className={avatarSize ? 'mt-[3px]' : 'h-5 w-5 mt-[3px]'}
+    <span
+      className="mt-[3px] inline-flex shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground"
       style={sizeStyle}
     >
+      <Icon name={iconName} size={Math.max(18, avatarSize * 0.62)} />
+    </span>
+  ) : (
+    <Avatar className="mt-[3px]" style={sizeStyle}>
       <AvatarImage
         src={avatarUrl}
         alt={`Avatar for ${author || 'default'}`}
         className="bg-transparent"
       />
-      <AvatarFallback className="bg-transparent">
-        <Skeleton className="h-full w-full rounded-full" />
+      <AvatarFallback className="bg-primary/10 text-sm font-semibold text-primary">
+        {fallbackLabel || <Skeleton className="h-full w-full rounded-full" />}
       </AvatarFallback>
     </Avatar>
   );
 
   return (
-    <span className={cn('inline-block', hide && 'invisible')}>
+    <span className={cn('inline-flex shrink-0', hide && 'invisible')}>
       <TooltipProvider>
         <Tooltip>
           <TooltipTrigger asChild>{avatarContent}</TooltipTrigger>

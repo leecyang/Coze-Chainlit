@@ -56,6 +56,13 @@ const Message = memo(
     const skip = toolCallSkip || hiddenSkip;
     const showInputSection = Boolean(message.input && message.showInput);
     const shouldRenderOutput = !showInputSection || Boolean(message.output);
+    const isEmptyRunningStep =
+      isStep &&
+      isRunning &&
+      !message.isError &&
+      !message.input &&
+      !message.output &&
+      !message.steps?.length;
 
     const userMessageContent = useMemo(
       () => (
@@ -84,6 +91,10 @@ const Message = memo(
           scorableRun={scorableRun}
         />
       );
+    }
+
+    if (isEmptyRunningStep) {
+      return null;
     }
 
     return (
