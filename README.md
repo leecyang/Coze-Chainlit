@@ -1,40 +1,40 @@
 # LingXi Chat
 
-LingXi Chat is a customized Chainlit 2.11.1 application for computer network learning. The repository is split into a React/Vite frontend and a Python Chainlit/FastAPI backend.
+LingXi Chat 是基于 Chainlit 2.11.1 定制的计算机网络学习应用。本仓库当前维护的是全栈版本，包含 React/Vite 前端和 Python Chainlit/FastAPI 后端。
 
-## Features
+## 功能特性
 
-- Chainlit chat UI with password authentication.
-- Three learning personas: `新手小白`, `辩论对手`, `计网专家`.
-- Coze Bot integration through Service Identity Token.
-- Admin console at `/admin` for users, configuration, conversations, activity stats, and leaderboard data.
-- Daily practice and assignment score APIs backed by SQLite.
-- Docker Compose deployment with persistent database storage.
+- 基于 Chainlit 的聊天界面，支持密码认证。
+- 内置三种学习人格：`新手小白`、`辩论对手`、`计网专家`。
+- 通过 Service Identity Token 对接 Coze Bot。
+- 管理后台位于 `/admin`，用于管理用户、配置、会话、活跃统计和排行榜数据。
+- 基于 SQLite 提供每日练习和作业分数 API。
+- 支持 Docker Compose 部署，并持久化数据库数据。
 
-## Project Layout
+## 项目结构
 
 ```text
 .
-├── backend/                 # Chainlit backend source and LingXi API implementation
-│   ├── app.py               # Chainlit entrypoint
-│   ├── chainlit/            # Local Chainlit source tree plus LingXi customizations
-│   ├── init_db.py           # Idempotent SQLite initialization and migrations
-│   ├── Dockerfile           # Production image, builds frontend assets first
-│   └── docker-compose.yml   # Backend-directory compose entrypoint
-├── frontend/                # React/Vite Chainlit frontend source
+├── backend/                 # Chainlit 后端源码和 LingXi API 实现
+│   ├── app.py               # Chainlit 入口文件
+│   ├── chainlit/            # 本地 Chainlit 源码树及 LingXi 定制内容
+│   ├── init_db.py           # 幂等 SQLite 初始化与迁移脚本
+│   ├── Dockerfile           # 生产镜像，会先构建前端资源
+│   └── docker-compose.yml   # 从 backend 目录启动时使用的 compose 入口
+├── frontend/                # React/Vite Chainlit 前端源码
 │   ├── src/
 │   ├── libs/react-client/
 │   └── libs/copilot/
-├── docker-compose.yml       # Root deployment entrypoint
-├── .env.example             # Deployment environment template
-└── .dockerignore            # Docker build context exclusions
+├── docker-compose.yml       # 根目录部署入口
+├── .env.example             # 部署环境变量模板
+└── .dockerignore            # Docker 构建上下文排除规则
 ```
 
-The backend does not depend on the PyPI `chainlit` package at runtime. It starts from the local `backend/chainlit/` source tree.
+后端运行时不依赖 PyPI 上的 `chainlit` 包，而是从本仓库的 `backend/chainlit/` 本地源码树启动。
 
-## Local Development
+## 本地开发
 
-### Backend
+### 后端
 
 ```powershell
 cd backend
@@ -45,7 +45,7 @@ python init_db.py
 python -m chainlit run app.py --host 0.0.0.0 --port 8000
 ```
 
-### Frontend
+### 前端
 
 ```powershell
 cd frontend
@@ -56,77 +56,81 @@ pnpm install
 pnpm dev --host 0.0.0.0 --port 5173
 ```
 
-The Vite dev server proxies `/api`, `/auth`, `/config`, `/project`, `/public`, `/user`, `/v1`, and `/ws` to `http://127.0.0.1:8000`.
+Vite 开发服务器会将 `/api`、`/auth`、`/config`、`/project`、`/public`、`/user`、`/v1` 和 `/ws` 代理到 `http://127.0.0.1:8000`。
 
-## Docker Compose Deployment
+## Docker Compose 部署
 
-1. Create deployment environment values:
+1. 创建部署环境变量文件：
 
 ```bash
 cp .env.example .env
 ```
 
-2. Edit `.env` and set at least:
+2. 编辑 `.env`，至少设置以下变量：
 
 ```env
 CHAINLIT_AUTH_SECRET=replace-with-a-long-random-secret
 ADMIN_PASSWORD=replace-with-a-strong-password
 ```
 
-3. Build and start:
+3. 构建并启动服务：
 
 ```bash
 docker compose up --build -d
 docker compose logs -f lingxi-backend
 ```
 
-The service is exposed at `http://localhost:8123` by default.
+默认情况下，服务暴露在 `http://localhost:8123`。
 
-Persistent SQLite data is stored in `./backend/data` and mounted into the container at `/app/backend/data`. The application uses `LINGXI_DB_PATH=/app/backend/data/chainlit.db` in Docker.
+持久化 SQLite 数据存放在 `./backend/data`，并挂载到容器内的 `/app/backend/data`。Docker 环境中应用使用 `LINGXI_DB_PATH=/app/backend/data/chainlit.db`。
 
-You can also deploy with the helper script:
+也可以使用辅助脚本部署：
 
 ```bash
 chmod +x deploy.sh
 ./deploy.sh
 ```
 
-## Configuration
+## 配置项
 
-| Variable | Required | Default | Description |
+| 变量 | 是否必填 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `CHAINLIT_AUTH_SECRET` | Yes | none | Secret used for Chainlit auth cookies and JWTs. |
-| `ADMIN_USERNAME` | No | `admin` | Admin account ensured during startup. |
-| `ADMIN_PASSWORD` | Yes | none | Admin password ensured during startup. |
-| `COZE_BASE_URL` | No | `https://api.coze.cn` | Coze API base URL. |
-| `COZE_BOT_ID` | For chat | empty | Coze Bot ID. |
-| `COZE_JWT_TOKEN` | For chat | empty | Coze Service Identity Token. |
-| `COZE_JWT_EXPIRES_AT` | No | empty | Unix timestamp for service token expiry. |
-| `LINGXI_DB_PATH` | No | Docker compose sets it | SQLite database path. |
+| `CHAINLIT_AUTH_SECRET` | 是 | 无 | 用于 Chainlit 认证 Cookie 和 JWT 的密钥。 |
+| `ADMIN_USERNAME` | 否 | `admin` | 启动时确保存在的管理员账号。 |
+| `ADMIN_PASSWORD` | 是 | 无 | 启动时确保存在的管理员密码。 |
+| `COZE_BASE_URL` | 否 | `https://api.coze.cn` | Coze API 基础地址。 |
+| `COZE_BOT_ID` | 聊天功能需要 | 空 | Coze Bot ID。 |
+| `COZE_JWT_TOKEN` | 聊天功能需要 | 空 | Coze Service Identity Token。 |
+| `COZE_JWT_EXPIRES_AT` | 否 | 空 | 服务 Token 过期时间的 Unix 时间戳。 |
+| `LINGXI_DB_PATH` | 否 | Docker Compose 会设置 | SQLite 数据库路径。 |
 
-Coze settings can also be configured by an administrator from `/admin`. Runtime values are stored in the SQLite `app_config` table.
+Coze 配置也可以由管理员在 `/admin` 中维护。运行时配置会保存在 SQLite 的 `app_config` 表中。
 
-## Useful Commands
+## 常用命令
 
 ```bash
-# Build the production image
+# 构建生产镜像
 docker compose build
 
-# Start in the background
+# 后台启动
 docker compose up -d
 
-# Follow backend logs
+# 跟踪后端日志
 docker compose logs -f lingxi-backend
 
-# Stop containers
+# 停止容器
 docker compose down
 
-# Recreate database tables locally
+# 本地重建数据库表
 cd backend && python init_db.py
 ```
 
-## Notes Before Pushing
+## 协作与分支
 
-- Do not commit `.env`, `backend/.env`, SQLite databases, local virtual environments, `node_modules`, or build output.
-- Keep secrets out of `docker-compose.yml`; use `.env` for deployment values.
-- The root compose file is the preferred production entrypoint. `backend/docker-compose.yml` is kept for compatibility when running from the backend directory.
+仓库分支定位、fork 和 PR 提交流程请查看 [CONTRIBUTING.md](./CONTRIBUTING.md)。
+
+## 推送前注意事项
+
+- 不要提交 `.env`、`backend/.env`、SQLite 数据库、本地虚拟环境、`node_modules` 或构建产物。
+- 不要把密钥写入 `docker-compose.yml`，部署配置请放在 `.env` 中。
+- 根目录的 `docker-compose.yml` 是推荐的生产部署入口；`backend/docker-compose.yml` 仅保留用于从后端目录启动的兼容场景。
