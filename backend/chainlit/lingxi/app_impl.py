@@ -7,6 +7,22 @@ from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
 from dotenv import load_dotenv
 from pathlib import Path
+from urllib.parse import unquote
+
+
+def _load_environment_files():
+    module_path = Path(__file__).resolve()
+    env_candidates = [
+        module_path.parents[2] / ".env",
+        Path.cwd() / ".env",
+        module_path.parents[3] / ".env",
+    ]
+    for env_path in env_candidates:
+        if env_path.exists():
+            load_dotenv(env_path, override=True)
+
+
+_load_environment_files()
 
 import chainlit as cl
 from chainlit.server import app
@@ -21,9 +37,6 @@ from starlette.responses import JSONResponse as StarletteJSONResponse
 
 from .settings import ACTIVE_CONFIG_KEYS, resolve_db_path
 from .tokens import build_token_health
-
-# Load environment variables
-load_dotenv()
 
 
 # Configure data persistence with SQLite.
@@ -493,6 +506,53 @@ def verify_admin_from_request(request: Request) -> Optional[str]:
         return None
 
 
+async def dispatch_admin_get_request(request: Request):
+    """Dispatch admin GET APIs before Chainlit's SPA catch-all route."""
+    path = request.url.path.rstrip("/")
+
+    if path == "/api/admin/auth/check":
+        return await check_admin_auth(request)
+    if path == "/api/admin/stats":
+        return await get_admin_stats(request)
+    if path == "/api/admin/overview":
+        return await get_admin_overview(request)
+    if path == "/api/admin/users":
+        return await get_admin_users(request)
+    if path == "/api/admin/config":
+        return await get_admin_config(request)
+    if path == "/api/admin/test-connection":
+        return await test_api_connection(request)
+    if path == "/api/admin/conversations":
+        return await get_admin_conversations(request)
+    if path == "/api/admin/learning/records":
+        return await get_admin_learning_records(request)
+    if path == "/api/admin/learning/mistakes":
+        return await get_admin_learning_mistakes(request)
+    if path == "/api/admin/learning/assignments":
+        return await get_admin_learning_assignments(request)
+    if path == "/api/admin/audit":
+        return await get_admin_audit(request)
+    if path == "/api/admin/leaderboard":
+        return await admin_get_leaderboard(
+            request,
+            request.query_params.get("period", "all"),
+        )
+
+    user_prefix = "/api/admin/users/"
+    if path.startswith(user_prefix):
+        username = unquote(path[len(user_prefix):])
+        if username and "/" not in username:
+            return await get_admin_user_detail(username, request)
+
+    conversation_prefix = "/api/admin/conversations/"
+    if path.startswith(conversation_prefix):
+        thread_id = unquote(path[len(conversation_prefix):])
+        if thread_id and "/" not in thread_id:
+            return await get_conversation_detail(thread_id, request)
+
+    return StarletteJSONResponse({"error": "接口不存在"}, status_code=404)
+
+
 # 中间件：拦截管理后台相关请求
 # 原因：Chainlit 的 server.py 最后注册了兜底路由 @router.get("/{full_path:path}")
 # 该兜底路由通过 app.include_router(router) 注册，比我们用 @app.get() 定义的路由
@@ -503,13 +563,8 @@ class AdminRouteMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         method = request.method
 
-        # 仅拦截 GET 请求（POST/PUT/DELETE 不受兜底路由影响，因为兜底只有 GET）
-        if method == "GET" and path == "/api/admin/auth/check":
-            admin_username = verify_admin_from_request(request)
-            return StarletteJSONResponse({
-                "is_admin": admin_username is not None,
-                "username": admin_username or ""
-            })
+        if method == "GET" and path.startswith("/api/admin/"):
+            return await dispatch_admin_get_request(request)
 
         # 拦截 GET /api/target-role 请求
         if method == "GET" and path == "/api/target-role":
@@ -2844,18 +2899,13 @@ async def update_admin_config(request: Request):
             config_storage["COZE_JWT_TOKEN"] = body["service_token"]
             _save_config_to_db("COZE_JWT_TOKEN", body["service_token"])
 
-        if "jwt_expires_at" in body:
-            COZE_JWT_EXPIRES_AT = str(body["jwt_expires_at"] or "")
-            config_storage["COZE_JWT_EXPIRES_AT"] = COZE_JWT_EXPIRES_AT
-            _save_config_to_db("COZE_JWT_EXPIRES_AT", COZE_JWT_EXPIRES_AT)
-        
         if "base_url" in body:
             COZE_BASE_URL = body["base_url"]
             config_storage["COZE_BASE_URL"] = body["base_url"]
             _save_config_to_db("COZE_BASE_URL", body["base_url"])
 
         changed = [
-            key for key in ("bot_id", "service_token", "jwt_expires_at", "base_url")
+            key for key in ("bot_id", "service_token", "base_url")
             if key in body and (key != "service_token" or body.get("service_token"))
         ]
         log_admin_activity(actor, "更新系统配置", "app_config", ",".join(changed))
@@ -2872,17 +2922,15 @@ async def test_api_connection(request: Request):
         token = await get_system_token()
         if not token:
             return JSONResponse({"success": False, "message": "没有可用的 Token"})
-        
-        async with aiohttp.ClientSession() as session:
-            headers = {
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json"
-            }
-            async with session.get(f"{COZE_BASE_URL}/v1/bots", headers=headers) as response:
-                if response.status == 200:
-                    return JSONResponse({"success": True, "message": "API 连接正常"})
-                else:
-                    return JSONResponse({"success": False, "message": f"API 返回状态码: {response.status}"})
+
+        coze = CozeAPI(token, COZE_BOT_ID or "")
+        conversation_id = await coze.create_conversation()
+        if conversation_id:
+            return JSONResponse({"success": True, "message": "API 连接正常"})
+        return JSONResponse({
+            "success": False,
+            "message": "Token 可读取，但创建 Coze 会话失败，请检查 Base URL 或 Service Identity Token 权限"
+        })
     except Exception as e:
         return JSONResponse({"success": False, "message": str(e)})
 

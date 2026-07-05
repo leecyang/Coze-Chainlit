@@ -105,7 +105,9 @@ describe('AdminPage', () => {
         .mocked(lingxiFetch)
         .mock.calls.find(([url, options]) => url === '/api/admin/config' && options?.method === 'PUT');
       expect(configCall).toBeTruthy();
-      expect(JSON.parse(String(configCall?.[1]?.body))).not.toHaveProperty('service_token');
+      const payload = JSON.parse(String(configCall?.[1]?.body));
+      expect(payload).not.toHaveProperty('service_token');
+      expect(payload).not.toHaveProperty('jwt_expires_at');
     });
   });
 });
