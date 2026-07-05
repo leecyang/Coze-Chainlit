@@ -63,6 +63,14 @@ const Message = memo(
       !message.input &&
       !message.output &&
       !message.steps?.length;
+    const isEmptyRunningAssistantMessage =
+      !isStep &&
+      !isUserMessage &&
+      isRunning &&
+      !message.isError &&
+      !message.input &&
+      !message.output &&
+      !message.steps?.length;
 
     const userMessageContent = useMemo(
       () => (
@@ -93,7 +101,7 @@ const Message = memo(
       );
     }
 
-    if (isEmptyRunningStep) {
+    if (isEmptyRunningStep || isEmptyRunningAssistantMessage) {
       return null;
     }
 

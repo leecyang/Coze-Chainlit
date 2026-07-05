@@ -15,7 +15,6 @@ import {
   useConfig
 } from '@chainlit/react-client';
 
-import { Logo } from '@/components/Logo';
 import { Markdown } from '@/components/Markdown';
 
 import MessageComposer from './MessageComposer';
@@ -74,7 +73,13 @@ export default function WelcomeScreen(props: Props) {
       }
     }
 
-    return <Logo className="w-[260px] max-w-[70vw] mb-3" />;
+    return (
+      <img
+        src="/public/logo_full_text.svg"
+        alt="logo"
+        className="logo w-[260px] max-w-[70vw] mb-3"
+      />
+    );
   }, [chatProfiles, chatProfile]);
 
   if (hasMessage(messages)) return null;
