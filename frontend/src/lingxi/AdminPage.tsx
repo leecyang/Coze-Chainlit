@@ -3,13 +3,18 @@ import {
   BarChart3,
   BookOpen,
   Bot,
+  Check,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Eye,
   FileText,
-  GitBranch,
   KeyRound,
   Loader2,
+  Lock,
   MessageSquareText,
+  Pencil,
+  Plus,
   RefreshCw,
   Save,
   Search,
@@ -17,7 +22,8 @@ import {
   Trash2,
   Upload,
   UserPlus,
-  Users
+  Users,
+  Workflow
 } from 'lucide-react';
 import { startTransition, useEffect, useState } from 'react';
 import { Navigate } from 'react-router-dom';
@@ -61,6 +67,8 @@ import {
   TableHeader,
   TableRow
 } from '@/components/ui/table';
+import { Separator } from '@/components/ui/separator';
+import { Slider } from '@/components/ui/slider';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
@@ -92,6 +100,14 @@ type ConfirmState = {
   actionLabel?: string;
   onConfirm: () => Promise<void>;
 } | null;
+
+type AgentWizardState = {
+  mode: 'create' | 'edit';
+  step: number;
+  agent: AgentDefinition;
+  subscriptions: Record<string, AgentSubscription>;
+  error: string;
+};
 
 type ConversationDetail = {
   thread: AdminConversation & { metadata?: Record<string, unknown> };
@@ -365,6 +381,202 @@ function ConversationDepthChart({ data }: { data?: Record<string, number> }) {
   );
 }
 
+const AGENT_ID_RE = /^[A-Za-z][A-Za-z0-9_]{1,63}$/;
+
+const WIZARD_STEPS = ['基本信息', 'Bot 绑定', '订阅与竞价', '确认提交'] as const;
+
+const CONTEXT_POLICY_LABELS: Record<string, string> = {
+  on_switch_recent_2: '切换时注入最近 2 轮',
+  none: '不注入上下文'
+};
+
+const AGENT_GRADIENTS = [
+  'from-sky-500 to-indigo-500',
+  'from-emerald-500 to-teal-500',
+  'from-amber-500 to-orange-500',
+  'from-fuchsia-500 to-purple-500',
+  'from-rose-500 to-red-500',
+  'from-cyan-500 to-blue-500'
+];
+
+function agentGradient(agentId: string) {
+  let hash = 0;
+  for (const char of agentId) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return AGENT_GRADIENTS[hash % AGENT_GRADIENTS.length];
+}
+
+function formatBid(value: number | undefined) {
+  return Number(value || 0).toFixed(2);
+}
+
+function AgentCard({
+  agent,
+  topics,
+  onEdit,
+  onToggle,
+  onDelete
+}: {
+  agent: AgentDefinition;
+  topics: RouteTopic[];
+  onEdit: (agent: AgentDefinition) => void;
+  onToggle: (agent: AgentDefinition, enabled: boolean) => void;
+  onDelete: (agent: AgentDefinition) => void;
+}) {
+  const topicName = (topic: string) =>
+    topics.find((item) => item.topic === topic)?.display_name || topic;
+  const TypeIcon = agent.agent_type === 'coze_workflow' ? Workflow : Bot;
+  const subscriptions = agent.subscriptions || [];
+
+  return (
+    <Card className={agent.enabled ? undefined : 'opacity-70'}>
+      <CardHeader className="flex flex-row items-start justify-between gap-3 pb-3">
+        <div className="flex items-start gap-3">
+          <div
+            className={`grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-gradient-to-br text-white shadow-sm ${agentGradient(agent.agent_id)}`}
+          >
+            <TypeIcon className="h-5 w-5" />
+          </div>
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-base font-semibold">
+                {agent.display_name || agent.agent_id}
+              </span>
+              <span
+                className={`inline-flex items-center gap-1 text-xs ${agent.enabled ? 'text-emerald-600' : 'text-muted-foreground'}`}
+              >
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${agent.enabled ? 'bg-emerald-500' : 'bg-muted-foreground/50'}`}
+                />
+                {agent.enabled ? '运行中' : '已停用'}
+              </span>
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+              <code className="rounded bg-muted px-1 py-0.5">{agent.agent_id}</code>
+              {agent.system_builtin ? <Badge variant="outline" className="h-5">系统内置</Badge> : null}
+              {agent.locked ? (
+                <Badge variant="outline" className="h-5">
+                  <Lock className="mr-1 h-3 w-3" />
+                  锁定
+                </Badge>
+              ) : null}
+              {agent.exclusive ? <Badge variant="outline" className="h-5">独占</Badge> : null}
+            </div>
+          </div>
+        </div>
+        <Switch
+          checked={agent.enabled}
+          onCheckedChange={(checked) => onToggle(agent, checked)}
+          aria-label={`启停 ${agent.display_name || agent.agent_id}`}
+        />
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="min-h-10 text-sm text-muted-foreground">
+          {agent.description || '暂无描述'}
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          <Badge variant="secondary">
+            {agent.agent_type === 'coze_workflow' ? 'Coze Workflow' : 'Coze Bot'}
+          </Badge>
+          <Badge variant="secondary">优先级 {agent.priority}</Badge>
+          <Badge variant="secondary">
+            {CONTEXT_POLICY_LABELS[agent.context_policy] || agent.context_policy}
+          </Badge>
+          {agent.bot_id ? (
+            <Badge variant="secondary" className="max-w-44">
+              <span className="truncate">Bot {agent.bot_id}</span>
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="border-amber-300 text-amber-600">
+              未绑定专属 Bot
+            </Badge>
+          )}
+        </div>
+        <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
+          <div className="flex items-center justify-between text-xs font-medium text-muted-foreground">
+            <span>订阅与置信度</span>
+            <span>{subscriptions.length} 个 topic</span>
+          </div>
+          {subscriptions.length ? (
+            subscriptions.map((sub) => (
+              <div key={sub.topic} className="space-y-1">
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <span>{topicName(sub.topic)}</span>
+                  <span className="tabular-nums text-muted-foreground">
+                    {formatBid(sub.base_bid)}
+                    {Number(sub.basic_bonus) ? ` · 基础+${formatBid(sub.basic_bonus)}` : ''}
+                    {Number(sub.advanced_bonus) ? ` · 进阶+${formatBid(sub.advanced_bonus)}` : ''}
+                  </span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className={`h-full rounded-full bg-gradient-to-r ${agentGradient(agent.agent_id)}`}
+                    style={{ width: `${Math.min(100, Math.round(Number(sub.base_bid || 0) * 100))}%` }}
+                  />
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="py-2 text-center text-xs text-muted-foreground">
+              未订阅任何 topic，不会参与任务竞价
+            </div>
+          )}
+        </div>
+        <Separator />
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">更新于 {formatTime(agent.updated_at)}</span>
+          <div className="flex gap-1">
+            <Button variant="ghost" size="sm" onClick={() => onEdit(agent)}>
+              <Pencil className="mr-1 h-3.5 w-3.5" />
+              编辑
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={agent.system_builtin || agent.locked}
+              onClick={() => onDelete(agent)}
+            >
+              <Trash2 className="mr-1 h-3.5 w-3.5" />
+              删除
+            </Button>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function WizardStepper({ step }: { step: number }) {
+  return (
+    <div className="flex items-center">
+      {WIZARD_STEPS.map((label, index) => (
+        <div key={label} className="flex flex-1 items-center last:flex-none">
+          <div className="flex items-center gap-2">
+            <div
+              className={`grid h-7 w-7 shrink-0 place-items-center rounded-full border text-xs font-medium transition-colors ${
+                index < step
+                  ? 'border-primary bg-primary text-primary-foreground'
+                  : index === step
+                    ? 'border-primary text-primary'
+                    : 'border-muted-foreground/30 text-muted-foreground'
+              }`}
+            >
+              {index < step ? <Check className="h-3.5 w-3.5" /> : index + 1}
+            </div>
+            <span
+              className={`whitespace-nowrap text-xs ${index === step ? 'font-medium text-foreground' : 'text-muted-foreground'}`}
+            >
+              {label}
+            </span>
+          </div>
+          {index < WIZARD_STEPS.length - 1 ? (
+            <div className={`mx-2 h-px flex-1 ${index < step ? 'bg-primary' : 'bg-border'}`} />
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function AdminPage() {
   const [authorized, setAuthorized] = useState<boolean | null>(null);
   const [adminName, setAdminName] = useState('');
@@ -444,9 +656,8 @@ export default function AdminPage() {
   const [configDraft, setConfigDraft] = useState<AdminConfig>({});
   const [agentsPayload, setAgentsPayload] = useState<AgentsPayload>(emptyAgentsPayload);
   const [topicsPayload, setTopicsPayload] = useState<TopicsPayload>(emptyTopicsPayload);
-  const [selectedAgentId, setSelectedAgentId] = useState('');
-  const [agentDraft, setAgentDraft] = useState<AgentDefinition>(makeBlankAgent());
-  const [subscriptionDraft, setSubscriptionDraft] = useState<Record<string, AgentSubscription>>({});
+  const [wizard, setWizard] = useState<AgentWizardState | null>(null);
+  const [wizardSubmitting, setWizardSubmitting] = useState(false);
   const [newTopic, setNewTopic] = useState({ topic: '', display_name: '', description: '' });
   const [audit, setAudit] = useState<Paginated<AdminActivity>>({
     items: [],
@@ -470,11 +681,22 @@ export default function AdminPage() {
     }
   };
 
-  const applyAgentSelection = (agent: AgentDefinition) => {
-    setSelectedAgentId(agent.agent_id);
-    setAgentDraft({ ...agent, subscriptions: agent.subscriptions || [] });
-    setSubscriptionDraft(
-      Object.fromEntries(
+  const openCreateWizard = () => {
+    setWizard({
+      mode: 'create',
+      step: 0,
+      agent: makeBlankAgent(),
+      subscriptions: {},
+      error: ''
+    });
+  };
+
+  const openEditWizard = (agent: AgentDefinition) => {
+    setWizard({
+      mode: 'edit',
+      step: 0,
+      agent: { ...agent, subscriptions: agent.subscriptions || [] },
+      subscriptions: Object.fromEntries(
         (agent.subscriptions || []).map((sub) => [
           sub.topic,
           {
@@ -484,14 +706,66 @@ export default function AdminPage() {
             advanced_bonus: Number(sub.advanced_bonus || 0)
           }
         ])
-      )
+      ),
+      error: ''
+    });
+  };
+
+  const patchWizardAgent = (patch: Partial<AgentDefinition>) => {
+    setWizard((previous) =>
+      previous ? { ...previous, agent: { ...previous.agent, ...patch } } : previous
     );
   };
 
-  const startNewAgent = () => {
-    setSelectedAgentId('');
-    setAgentDraft(makeBlankAgent());
-    setSubscriptionDraft({});
+  const patchWizardSubscription = (topic: string, patch: Partial<AgentSubscription> | null, defaultBid = 0.5) => {
+    setWizard((previous) => {
+      if (!previous) return previous;
+      const next = { ...previous.subscriptions };
+      if (patch === null) {
+        delete next[topic];
+      } else {
+        const current: AgentSubscription = next[topic] || {
+          topic,
+          base_bid: defaultBid,
+          basic_bonus: 0,
+          advanced_bonus: 0
+        };
+        next[topic] = { ...current, ...patch };
+      }
+      return { ...previous, subscriptions: next };
+    });
+  };
+
+  const wizardStepError = (state: AgentWizardState): string => {
+    if (state.step === 0) {
+      if (state.mode === 'create' && !AGENT_ID_RE.test(state.agent.agent_id.trim())) {
+        return 'Agent ID 需以英文字母开头，仅含字母、数字、下划线，长度 2-64';
+      }
+      if (!state.agent.locked && !state.agent.display_name.trim()) {
+        return '请填写智能体中文名称';
+      }
+    }
+    if (state.step === 1) {
+      if (state.mode === 'create' && !state.agent.bot_id.trim()) {
+        return '请填写该智能体绑定的 Coze Bot ID';
+      }
+    }
+    return '';
+  };
+
+  const wizardNext = () => {
+    setWizard((previous) => {
+      if (!previous) return previous;
+      const error = wizardStepError(previous);
+      if (error) return { ...previous, error };
+      return { ...previous, step: Math.min(previous.step + 1, WIZARD_STEPS.length - 1), error: '' };
+    });
+  };
+
+  const wizardBack = () => {
+    setWizard((previous) =>
+      previous ? { ...previous, step: Math.max(previous.step - 1, 0), error: '' } : previous
+    );
   };
 
   const loadOverview = async () => {
@@ -569,10 +843,7 @@ export default function AdminPage() {
 
   const loadAgents = async () => {
     const data = await lingxiFetch<AgentsPayload>('/api/admin/agents');
-    const payload = normalizeAgentsPayload(data);
-    setAgentsPayload(payload);
-    const selected = payload.agents.find((agent) => agent.agent_id === selectedAgentId) || payload.agents[0];
-    if (selected) applyAgentSelection(selected);
+    setAgentsPayload(normalizeAgentsPayload(data));
   };
 
   const loadTopics = async () => {
@@ -786,7 +1057,6 @@ export default function AdminPage() {
     await run(async () => {
       const payload = { ...configDraft };
       if (!payload.service_token) delete payload.service_token;
-      delete payload.bot_id;
       delete payload.jwt_expires_at;
       await lingxiFetch('/api/admin/config', {
         method: 'PUT',
@@ -796,70 +1066,76 @@ export default function AdminPage() {
     }, '配置已保存');
   };
 
-  const saveAgent = async () => {
-    await run(async () => {
+  const submitWizard = async () => {
+    if (!wizard) return;
+    const agentId = wizard.agent.agent_id.trim();
+    setWizardSubmitting(true);
+    try {
       const payload = {
-        agent_id: agentDraft.agent_id,
-        display_name: agentDraft.display_name,
-        description: agentDraft.description,
-        agent_type: agentDraft.agent_type,
-        bot_id: agentDraft.bot_id,
-        enabled: agentDraft.enabled,
-        exclusive: agentDraft.exclusive,
-        priority: Number(agentDraft.priority || 100),
-        context_policy: agentDraft.context_policy
+        agent_id: agentId,
+        display_name: wizard.agent.display_name.trim(),
+        description: wizard.agent.description,
+        agent_type: wizard.agent.agent_type,
+        bot_id: wizard.agent.bot_id.trim(),
+        enabled: wizard.agent.enabled,
+        exclusive: wizard.agent.exclusive,
+        priority: Number(wizard.agent.priority || 100),
+        context_policy: wizard.agent.context_policy
       };
-      const data = await lingxiFetch<AgentsPayload>(
-        selectedAgentId
-          ? `/api/admin/agents/${encodeURIComponent(selectedAgentId)}`
+      let data = await lingxiFetch<AgentsPayload>(
+        wizard.mode === 'edit'
+          ? `/api/admin/agents/${encodeURIComponent(agentId)}`
           : '/api/admin/agents',
         {
-          method: selectedAgentId ? 'PUT' : 'POST',
+          method: wizard.mode === 'edit' ? 'PUT' : 'POST',
           body: JSON.stringify(payload)
         }
       );
-      const nextPayload = normalizeAgentsPayload(data);
-      setAgentsPayload(nextPayload);
-      const selected = nextPayload.agents.find((agent) => agent.agent_id === payload.agent_id);
-      if (selected) applyAgentSelection(selected);
+      if (!wizard.agent.locked) {
+        data = await lingxiFetch<AgentsPayload>(
+          `/api/admin/agents/${encodeURIComponent(agentId)}/subscriptions`,
+          {
+            method: 'PUT',
+            body: JSON.stringify({ subscriptions: Object.values(wizard.subscriptions) })
+          }
+        );
+      }
+      setAgentsPayload(normalizeAgentsPayload(data));
+      setWizard(null);
+      setMessage(wizard.mode === 'edit' ? '智能体已保存' : '智能体注册完成，已加入消息总线');
       await Promise.all([loadAudit(1), loadOverview()]);
-    }, selectedAgentId ? '智能体已保存' : '智能体已注册');
+    } catch (error) {
+      const text = error instanceof Error ? error.message : '提交失败';
+      setWizard((previous) => (previous ? { ...previous, error: text } : previous));
+    } finally {
+      setWizardSubmitting(false);
+    }
   };
 
-  const saveSubscriptions = async () => {
-    if (!selectedAgentId) return;
+  const toggleAgentEnabled = async (agent: AgentDefinition, enabled: boolean) => {
     await run(async () => {
+      // 部分更新：只发送 enabled，其余字段由后端保留原值
       const data = await lingxiFetch<AgentsPayload>(
-        `/api/admin/agents/${encodeURIComponent(selectedAgentId)}/subscriptions`,
-        {
-          method: 'PUT',
-          body: JSON.stringify({ subscriptions: Object.values(subscriptionDraft) })
-        }
+        `/api/admin/agents/${encodeURIComponent(agent.agent_id)}`,
+        { method: 'PUT', body: JSON.stringify({ enabled }) }
       );
-      const payload = normalizeAgentsPayload(data);
-      setAgentsPayload(payload);
-      const selected = payload.agents.find((agent) => agent.agent_id === selectedAgentId);
-      if (selected) applyAgentSelection(selected);
-      await Promise.all([loadAudit(1), loadOverview()]);
-    }, '订阅与 bid 表已保存');
+      setAgentsPayload(normalizeAgentsPayload(data));
+      await loadAudit(1);
+    }, `${agent.display_name || agent.agent_id} ${enabled ? '已启用' : '已停用'}`);
   };
 
-  const deleteAgent = () => {
-    if (!selectedAgentId || agentDraft.system_builtin) return;
+  const removeAgent = (agent: AgentDefinition) => {
+    if (agent.system_builtin || agent.locked) return;
     setConfirm({
       title: '删除智能体',
-      description: `将删除 ${agentDraft.display_name || selectedAgentId} 以及它的订阅和 bid 表。`,
+      description: `将删除 ${agent.display_name || agent.agent_id} 以及它的订阅和 bid 表。`,
       actionLabel: '确认删除',
       onConfirm: async () => {
         const data = await lingxiFetch<AgentsPayload>(
-          `/api/admin/agents/${encodeURIComponent(selectedAgentId)}`,
+          `/api/admin/agents/${encodeURIComponent(agent.agent_id)}`,
           { method: 'DELETE' }
         );
-        const payload = normalizeAgentsPayload(data);
-        setAgentsPayload(payload);
-        const selected = payload.agents[0];
-        if (selected) applyAgentSelection(selected);
-        else startNewAgent();
+        setAgentsPayload(normalizeAgentsPayload(data));
         await Promise.all([loadAudit(1), loadOverview()]);
       }
     });
@@ -1445,263 +1721,46 @@ export default function AdminPage() {
           </TabsContent>
 
           <TabsContent value="agents" className="space-y-4">
-            <section className="grid gap-4 xl:grid-cols-[1fr_420px]">
-              <Card>
-                <CardHeader className="flex flex-row items-center justify-between gap-3">
+            <Card>
+              <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
+                <div>
                   <CardTitle className="flex items-center gap-2 text-base">
                     <Bot className="h-4 w-4" />
-                    智能体列表
+                    智能体注册表
                   </CardTitle>
-                  <Button variant="outline" size="sm" onClick={startNewAgent}>
-                    <UserPlus className="h-4 w-4" />
-                    注册智能体
-                  </Button>
-                </CardHeader>
-                <CardContent>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>状态</TableHead>
-                        <TableHead>Agent</TableHead>
-                        <TableHead>类型</TableHead>
-                        <TableHead>Bot ID</TableHead>
-                        <TableHead>订阅</TableHead>
-                        <TableHead>优先级</TableHead>
-                        <TableHead>最近修改</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {agentsPayload.agents.length ? agentsPayload.agents.map((agent) => (
-                        <TableRow
-                          key={agent.agent_id}
-                          className={selectedAgentId === agent.agent_id ? 'bg-muted/60' : 'cursor-pointer'}
-                          onClick={() => applyAgentSelection(agent)}
-                        >
-                          <TableCell>
-                            <Badge variant={agent.enabled ? 'secondary' : 'outline'}>
-                              {agent.enabled ? '启用' : '停用'}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
-                            <div className="font-medium">{agent.display_name}</div>
-                            <div className="text-xs text-muted-foreground">
-                              {agent.agent_id}
-                              {agent.system_builtin ? ' · 系统内置' : ''}
-                            </div>
-                          </TableCell>
-                          <TableCell>{agent.agent_type === 'coze_workflow' ? 'Workflow' : 'Coze Bot'}</TableCell>
-                          <TableCell>{agent.bot_id ? '已配置' : '回退主 Bot'}</TableCell>
-                          <TableCell>{agent.subscription_count}</TableCell>
-                          <TableCell>{agent.priority}</TableCell>
-                          <TableCell>{formatTime(agent.updated_at)}</TableCell>
-                        </TableRow>
-                      )) : <EmptyRow colSpan={7} text="暂无智能体，请先注册" />}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">
-                    {selectedAgentId ? '注册/编辑智能体' : '注册新智能体'}
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <div className="space-y-2">
-                      <Label>Agent ID</Label>
-                      <Input
-                        disabled={Boolean(selectedAgentId)}
-                        placeholder="Brush_Up_Coach"
-                        value={agentDraft.agent_id}
-                        onChange={(event) => setAgentDraft({ ...agentDraft, agent_id: event.target.value })}
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>中文名称</Label>
-                      <Input
-                        disabled={agentDraft.locked}
-                        placeholder="刷题教练"
-                        value={agentDraft.display_name}
-                        onChange={(event) => setAgentDraft({ ...agentDraft, display_name: event.target.value })}
-                      />
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>描述</Label>
-                    <Textarea
-                      disabled={agentDraft.locked}
-                      value={agentDraft.description}
-                      onChange={(event) => setAgentDraft({ ...agentDraft, description: event.target.value })}
-                    />
-                  </div>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <div className="space-y-2">
-                      <Label>类型</Label>
-                      <Select
-                        disabled={agentDraft.locked}
-                        value={agentDraft.agent_type}
-                        onValueChange={(value) => setAgentDraft({ ...agentDraft, agent_type: value as AgentDefinition['agent_type'] })}
-                      >
-                        <SelectTrigger><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="coze_chat">Coze Bot</SelectItem>
-                          <SelectItem value="coze_workflow">Coze Workflow</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label>优先级</Label>
-                      <Input
-                        disabled={agentDraft.locked}
-                        type="number"
-                        value={agentDraft.priority}
-                        onChange={(event) => setAgentDraft({ ...agentDraft, priority: Number(event.target.value) || 100 })}
-                      />
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Bot ID</Label>
-                    <Input
-                      placeholder="留空则使用环境默认 Bot"
-                      value={agentDraft.bot_id}
-                      onChange={(event) => setAgentDraft({ ...agentDraft, bot_id: event.target.value })}
-                    />
-                  </div>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <label className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
-                      启用
-                      <Switch
-                        checked={agentDraft.enabled}
-                        onCheckedChange={(checked) => setAgentDraft({ ...agentDraft, enabled: checked })}
-                      />
-                    </label>
-                    <label className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
-                      独占智能体
-                      <Switch
-                        disabled={agentDraft.locked}
-                        checked={agentDraft.exclusive}
-                        onCheckedChange={(checked) => setAgentDraft({ ...agentDraft, exclusive: checked })}
-                      />
-                    </label>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>跨 Agent 上下文策略</Label>
-                    <Select
-                      disabled={agentDraft.locked}
-                      value={agentDraft.context_policy}
-                      onValueChange={(value) => setAgentDraft({ ...agentDraft, context_policy: value as AgentDefinition['context_policy'] })}
-                    >
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="on_switch_recent_2">跨 Agent 切换时注入最近 2 轮</SelectItem>
-                        <SelectItem value="none">不注入上下文</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <Button className="gap-2" onClick={saveAgent}>
-                      <Save className="h-4 w-4" />
-                      保存智能体
-                    </Button>
-                    <Button variant="outline" onClick={startNewAgent}>清空表单</Button>
-                    <Button
-                      variant="outline"
-                      disabled={!selectedAgentId || agentDraft.system_builtin}
-                      onClick={deleteAgent}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                      删除非系统智能体
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            </section>
-
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between gap-3">
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <GitBranch className="h-4 w-4" />
-                  订阅与 bid 表
-                </CardTitle>
-                <Button
-                  className="gap-2"
-                  disabled={!selectedAgentId || agentDraft.locked}
-                  onClick={saveSubscriptions}
-                >
-                  <Save className="h-4 w-4" />
-                  保存订阅
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    订阅-发布式多智能体：Router 发布任务 topic，各智能体按订阅竞价，Selector 选出最终应答者
+                  </p>
+                </div>
+                <Button className="gap-2" onClick={openCreateWizard}>
+                  <Plus className="h-4 w-4" />
+                  注册智能体
                 </Button>
               </CardHeader>
               <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>订阅</TableHead>
-                      <TableHead>Topic</TableHead>
-                      <TableHead>基础 bid</TableHead>
-                      <TableHead>基础加成</TableHead>
-                      <TableHead>进阶加成</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {agentsPayload.topics.length ? agentsPayload.topics.map((topic) => {
-                      const sub = subscriptionDraft[topic.topic];
-                      return (
-                        <TableRow key={topic.topic}>
-                          <TableCell>
-                            <Checkbox
-                              disabled={!selectedAgentId || agentDraft.locked}
-                              checked={Boolean(sub)}
-                              onCheckedChange={(checked) => {
-                                setSubscriptionDraft((previous) => {
-                                  const next = { ...previous };
-                                  if (checked === true) {
-                                    next[topic.topic] = next[topic.topic] || {
-                                      topic: topic.topic,
-                                      base_bid: topic.is_exclusive ? 1 : 0.5,
-                                      basic_bonus: 0,
-                                      advanced_bonus: 0
-                                    };
-                                  } else {
-                                    delete next[topic.topic];
-                                  }
-                                  return next;
-                                });
-                              }}
-                            />
-                          </TableCell>
-                          <TableCell>
-                            <div className="font-medium">{topic.display_name}</div>
-                            <div className="text-xs text-muted-foreground">{topic.topic}</div>
-                          </TableCell>
-                          {(['base_bid', 'basic_bonus', 'advanced_bonus'] as const).map((field) => (
-                            <TableCell key={field}>
-                              <Input
-                                className="w-28"
-                                disabled={!sub || agentDraft.locked}
-                                type="number"
-                                step="0.05"
-                                value={sub?.[field] ?? ''}
-                                onChange={(event) => {
-                                  const value = Number(event.target.value) || 0;
-                                  setSubscriptionDraft((previous) => ({
-                                    ...previous,
-                                    [topic.topic]: {
-                                      ...(previous[topic.topic] || { topic: topic.topic, base_bid: 0, basic_bonus: 0, advanced_bonus: 0 }),
-                                      [field]: value
-                                    }
-                                  }));
-                                }}
-                              />
-                            </TableCell>
-                          ))}
-                        </TableRow>
-                      );
-                    }) : <EmptyRow colSpan={5} text="暂无 topic，请先维护路由词表" />}
-                  </TableBody>
-                </Table>
+                {agentsPayload.agents.length ? (
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                    {agentsPayload.agents.map((agent) => (
+                      <AgentCard
+                        key={agent.agent_id}
+                        agent={agent}
+                        topics={agentsPayload.topics}
+                        onEdit={openEditWizard}
+                        onToggle={toggleAgentEnabled}
+                        onDelete={removeAgent}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center gap-3 py-16 text-center">
+                    <Bot className="h-10 w-10 text-muted-foreground/40" />
+                    <div className="text-sm text-muted-foreground">暂无智能体，请先注册</div>
+                    <Button variant="outline" className="gap-2" onClick={openCreateWizard}>
+                      <Plus className="h-4 w-4" />
+                      注册第一个智能体
+                    </Button>
+                  </div>
+                )}
               </CardContent>
             </Card>
 
@@ -1722,6 +1781,11 @@ export default function AdminPage() {
                 </div>
 
                 <div className="space-y-4">
+                  {!topicsPayload.topics.length ? (
+                    <div className="rounded-md border border-dashed py-8 text-center text-sm text-muted-foreground">
+                      暂无 topic，请先维护路由词表
+                    </div>
+                  ) : null}
                   {topicsPayload.topics.map((topic) => {
                     const groups = topicsPayload.keywords.topic[topic.topic] || {};
                     return (
@@ -1882,6 +1946,371 @@ export default function AdminPage() {
           </TabsContent>
         </Tabs>
       </div>
+
+      <Dialog
+        open={!!wizard}
+        onOpenChange={(open) => {
+          if (!open && !wizardSubmitting) setWizard(null);
+        }}
+      >
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              {wizard?.mode === 'edit'
+                ? `编辑智能体：${wizard.agent.display_name || wizard.agent.agent_id}`
+                : '注册新智能体'}
+            </DialogTitle>
+            <DialogDescription>
+              按步骤完成智能体接入：填写基础信息，绑定 Coze Bot，订阅任务 topic 并设定竞价，最后核对提交。
+            </DialogDescription>
+          </DialogHeader>
+
+          {wizard ? (
+            <div className="space-y-5">
+              <WizardStepper step={wizard.step} />
+
+              {wizard.step === 0 ? (
+                <div className="space-y-4">
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label>Agent ID</Label>
+                      <Input
+                        disabled={wizard.mode === 'edit'}
+                        placeholder="Brush_Up_Coach"
+                        value={wizard.agent.agent_id}
+                        onChange={(event) => patchWizardAgent({ agent_id: event.target.value })}
+                      />
+                      <p className="text-xs text-muted-foreground">英文标识，注册后不可修改</p>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>中文名称</Label>
+                      <Input
+                        disabled={wizard.agent.locked}
+                        placeholder="刷题教练"
+                        value={wizard.agent.display_name}
+                        onChange={(event) => patchWizardAgent({ display_name: event.target.value })}
+                      />
+                      <p className="text-xs text-muted-foreground">展示在会话与使用统计中的名称</p>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>描述</Label>
+                    <Textarea
+                      disabled={wizard.agent.locked}
+                      placeholder="一句话说明该智能体的定位与回复风格"
+                      value={wizard.agent.description}
+                      onChange={(event) => patchWizardAgent({ description: event.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-2 md:w-44">
+                    <Label>优先级</Label>
+                    <Input
+                      disabled={wizard.agent.locked}
+                      type="number"
+                      value={wizard.agent.priority}
+                      onChange={(event) => patchWizardAgent({ priority: Number(event.target.value) || 100 })}
+                    />
+                    <p className="text-xs text-muted-foreground">数值越小，竞价平手时越优先</p>
+                  </div>
+                </div>
+              ) : null}
+
+              {wizard.step === 1 ? (
+                <div className="space-y-4">
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label>接入类型</Label>
+                      <Select
+                        disabled={wizard.agent.locked}
+                        value={wizard.agent.agent_type}
+                        onValueChange={(value) =>
+                          patchWizardAgent({ agent_type: value as AgentDefinition['agent_type'] })
+                        }
+                      >
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="coze_chat">Coze Bot（对话型）</SelectItem>
+                          <SelectItem value="coze_workflow">Coze Workflow（工作流型）</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>跨 Agent 上下文策略</Label>
+                      <Select
+                        disabled={wizard.agent.locked}
+                        value={wizard.agent.context_policy}
+                        onValueChange={(value) =>
+                          patchWizardAgent({ context_policy: value as AgentDefinition['context_policy'] })
+                        }
+                      >
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="on_switch_recent_2">切换时注入最近 2 轮</SelectItem>
+                          <SelectItem value="none">不注入上下文</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Coze Bot ID</Label>
+                    <Input
+                      placeholder="在 Coze 平台创建 Bot 后粘贴其 ID"
+                      value={wizard.agent.bot_id}
+                      onChange={(event) => patchWizardAgent({ bot_id: event.target.value })}
+                    />
+                    <p className={`text-xs ${wizard.mode === 'edit' && !wizard.agent.bot_id ? 'text-amber-600' : 'text-muted-foreground'}`}>
+                      {wizard.mode === 'create'
+                        ? '该智能体运行时调用的 Coze Bot（必填）'
+                        : wizard.agent.bot_id
+                          ? '该智能体运行时调用的 Coze Bot'
+                          : '当前未绑定专属 Bot，建议为每个智能体绑定独立的 Coze Bot'}
+                    </p>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
+                      注册后立即启用
+                      <Switch
+                        checked={wizard.agent.enabled}
+                        onCheckedChange={(checked) => patchWizardAgent({ enabled: checked })}
+                      />
+                    </label>
+                    <label className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
+                      独占智能体
+                      <Switch
+                        disabled={wizard.agent.locked}
+                        checked={wizard.agent.exclusive}
+                        onCheckedChange={(checked) => patchWizardAgent({ exclusive: checked })}
+                      />
+                    </label>
+                  </div>
+                </div>
+              ) : null}
+
+              {wizard.step === 2 ? (
+                <div className="space-y-3">
+                  {wizard.agent.locked ? (
+                    <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+                      <Lock className="mr-1 inline h-3.5 w-3.5" />
+                      系统锁定智能体的订阅与竞价不可修改
+                    </div>
+                  ) : null}
+                  {agentsPayload.topics.length ? (
+                    <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
+                      {agentsPayload.topics.map((topic) => {
+                        const sub = wizard.subscriptions[topic.topic];
+                        // 独占 topic 已被其他智能体订阅时不可再选
+                        const exclusiveHolder = topic.is_exclusive
+                          ? agentsPayload.agents.find(
+                              (item) =>
+                                item.agent_id !== wizard.agent.agent_id &&
+                                (item.subscriptions || []).some((entry) => entry.topic === topic.topic)
+                            )
+                          : undefined;
+                        return (
+                          <div
+                            key={topic.topic}
+                            className={`rounded-lg border p-3 transition-colors ${sub ? 'border-primary/40 bg-primary/5' : ''} ${exclusiveHolder ? 'opacity-60' : ''}`}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <label className="flex cursor-pointer items-start gap-2">
+                                <Checkbox
+                                  disabled={wizard.agent.locked || Boolean(exclusiveHolder)}
+                                  checked={Boolean(sub)}
+                                  onCheckedChange={(checked) =>
+                                    patchWizardSubscription(
+                                      topic.topic,
+                                      checked === true ? {} : null,
+                                      topic.is_exclusive ? 1 : 0.5
+                                    )
+                                  }
+                                />
+                                <span>
+                                  <span className="text-sm font-medium">{topic.display_name}</span>
+                                  <code className="ml-2 text-xs text-muted-foreground">{topic.topic}</code>
+                                  {topic.is_exclusive ? (
+                                    <Badge variant="outline" className="ml-2 h-5">独占</Badge>
+                                  ) : null}
+                                  {exclusiveHolder ? (
+                                    <span className="ml-2 text-xs text-amber-600">
+                                      已被 {exclusiveHolder.display_name} 独占
+                                    </span>
+                                  ) : null}
+                                </span>
+                              </label>
+                              {sub ? (
+                                <span className="whitespace-nowrap text-xs tabular-nums text-muted-foreground">
+                                  置信度 {formatBid(sub.base_bid)}
+                                </span>
+                              ) : null}
+                            </div>
+                            {sub ? (
+                              <div className="mt-3 grid gap-3 md:grid-cols-[1fr_130px_130px]">
+                                <div className="space-y-2">
+                                  <Label className="text-xs text-muted-foreground">基础置信度（0-1）</Label>
+                                  <Slider
+                                    disabled={wizard.agent.locked}
+                                    value={[Number(sub.base_bid || 0)]}
+                                    min={0}
+                                    max={1}
+                                    step={0.05}
+                                    onValueChange={([value]) =>
+                                      patchWizardSubscription(topic.topic, { base_bid: value })
+                                    }
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label className="text-xs text-muted-foreground">基础难度加成</Label>
+                                  <Input
+                                    className="h-8"
+                                    disabled={wizard.agent.locked}
+                                    type="number"
+                                    step="0.05"
+                                    value={sub.basic_bonus}
+                                    onChange={(event) =>
+                                      patchWizardSubscription(topic.topic, {
+                                        basic_bonus: Number(event.target.value) || 0
+                                      })
+                                    }
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label className="text-xs text-muted-foreground">进阶难度加成</Label>
+                                  <Input
+                                    className="h-8"
+                                    disabled={wizard.agent.locked}
+                                    type="number"
+                                    step="0.05"
+                                    value={sub.advanced_bonus}
+                                    onChange={(event) =>
+                                      patchWizardSubscription(topic.topic, {
+                                        advanced_bonus: Number(event.target.value) || 0
+                                      })
+                                    }
+                                  />
+                                </div>
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="rounded-md border border-dashed py-8 text-center text-sm text-muted-foreground">
+                      暂无 topic，请先维护路由词表
+                    </div>
+                  )}
+                  {!Object.keys(wizard.subscriptions).length && !wizard.agent.locked ? (
+                    <p className="text-xs text-amber-600">
+                      尚未订阅任何 topic：注册后该智能体不会参与任何任务竞价
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {wizard.step === 3 ? (
+                <div className="overflow-hidden rounded-lg border">
+                  <div className="flex items-center gap-3 border-b bg-muted/30 px-4 py-3">
+                    <div
+                      className={`grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br text-white ${agentGradient(wizard.agent.agent_id || 'new')}`}
+                    >
+                      {wizard.agent.agent_type === 'coze_workflow' ? (
+                        <Workflow className="h-5 w-5" />
+                      ) : (
+                        <Bot className="h-5 w-5" />
+                      )}
+                    </div>
+                    <div>
+                      <div className="font-medium">{wizard.agent.display_name || wizard.agent.agent_id}</div>
+                      <code className="text-xs text-muted-foreground">{wizard.agent.agent_id}</code>
+                    </div>
+                  </div>
+                  <dl className="grid gap-x-6 gap-y-2 px-4 py-3 text-sm md:grid-cols-2">
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-muted-foreground">接入类型</dt>
+                      <dd>{wizard.agent.agent_type === 'coze_workflow' ? 'Coze Workflow' : 'Coze Bot'}</dd>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-muted-foreground">Coze Bot</dt>
+                      <dd className="max-w-48 truncate">{wizard.agent.bot_id || '未绑定'}</dd>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-muted-foreground">优先级</dt>
+                      <dd>{wizard.agent.priority}</dd>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-muted-foreground">上下文策略</dt>
+                      <dd>{CONTEXT_POLICY_LABELS[wizard.agent.context_policy] || wizard.agent.context_policy}</dd>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-muted-foreground">状态</dt>
+                      <dd>{wizard.agent.enabled ? '启用' : '停用'}{wizard.agent.exclusive ? ' · 独占' : ''}</dd>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-muted-foreground">描述</dt>
+                      <dd className="max-w-48 truncate">{wizard.agent.description || '-'}</dd>
+                    </div>
+                  </dl>
+                  <Separator />
+                  <div className="px-4 py-3">
+                    <div className="mb-2 text-xs font-medium text-muted-foreground">
+                      订阅 {Object.keys(wizard.subscriptions).length} 个 topic
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {Object.values(wizard.subscriptions).length ? (
+                        Object.values(wizard.subscriptions).map((sub) => (
+                          <Badge key={sub.topic} variant="secondary" className="gap-1">
+                            {agentsPayload.topics.find((item) => item.topic === sub.topic)?.display_name || sub.topic}
+                            <span className="tabular-nums text-muted-foreground">{formatBid(sub.base_bid)}</span>
+                          </Badge>
+                        ))
+                      ) : (
+                        <span className="text-xs text-muted-foreground">无订阅</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {wizard.error ? (
+                <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                  {wizard.error}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          <DialogFooter className="gap-2 sm:justify-between">
+            <div>
+              {wizard && wizard.step > 0 ? (
+                <Button variant="outline" onClick={wizardBack} disabled={wizardSubmitting}>
+                  <ChevronLeft className="mr-1 h-4 w-4" />
+                  上一步
+                </Button>
+              ) : null}
+            </div>
+            <div className="flex gap-2">
+              <Button variant="ghost" onClick={() => setWizard(null)} disabled={wizardSubmitting}>
+                取消
+              </Button>
+              {wizard && wizard.step < WIZARD_STEPS.length - 1 ? (
+                <Button onClick={wizardNext}>
+                  下一步
+                  <ChevronRight className="ml-1 h-4 w-4" />
+                </Button>
+              ) : (
+                <Button onClick={submitWizard} disabled={wizardSubmitting}>
+                  {wizardSubmitting ? (
+                    <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Check className="mr-1 h-4 w-4" />
+                  )}
+                  {wizard?.mode === 'edit' ? '保存修改' : '确认注册'}
+                </Button>
+              )}
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={csvOpen}

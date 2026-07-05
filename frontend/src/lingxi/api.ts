@@ -97,7 +97,6 @@ export type AdminOverview = {
 };
 
 export type AdminConfig = {
-  bot_id?: string;
   base_url?: string;
   jwt_expires_at?: number | null;
   has_service_token?: boolean;
