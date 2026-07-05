@@ -1335,30 +1335,6 @@ async def on_message(message: cl.Message):
     cl.user_session.set("username", username)
     cl.user_session.set("role", role)
 
-    # Handle special commands
-    content = message.content.strip().lower()
-
-    if content == "/register" and role == "admin":
-        await show_register_form()
-        return
-
-    if content == "/users" and role == "admin":
-        await list_users()
-        return
-
-
-    if content in ("/password", "/密码", "/passwd"):
-        await change_password(username)
-        return
-
-    if content == "/help":
-        await show_help(role)
-        return
-
-    if content == "/model" and role == "admin":
-        await configure_model()
-        return
-
     # Get Coze client and conversation_id
     coze = cl.user_session.get("coze")
     conversation_id = cl.user_session.get("conversation_id")
@@ -1476,435 +1452,6 @@ async def on_message(message: cl.Message):
         msg.content = error_msg
         # 错误情况下需要调用 update() 来持久化错误消息
         await msg.update()
-
-
-async def show_help(role: str):
-    """Show help information"""
-    help_text = "📖 **可用命令**\n\n"
-
-    if role == "admin":
-        help_text += "**管理员命令：**\n"
-        help_text += "- `/model` - 配置模型参数 (Service Identity Token, Bot ID)\n"
-        help_text += "- `/register` - 注册新用户\n"
-        help_text += "- `/users` - 用户管理系统（注册/删除/重置密码/修改角色/查看详情）\n\n"
-
-    help_text += "**普通命令：**\n"
-
-    help_text += "- `/password` - 修改登录密码\n"
-    help_text += "- `/help` - 显示此帮助信息\n"
-    help_text += "- 直接输入问题 - 与 AI 助手对话\n\n"
-
-    if role == "admin":
-        help_text += "---\n👑 您当前以**管理员**身份登录。"
-    else:
-        help_text += "---\n👤 您当前以**普通用户**身份登录。"
-
-    await cl.Message(content=help_text).send()
-
-
-async def change_password(username: str):
-    """用户自助修改密码"""
-    if username not in users_db:
-        await cl.Message(content="❌ 用户不存在，无法修改密码。").send()
-        return
-
-    # 第一步：验证旧密码
-    await cl.Message(content="🔐 **修改密码**\n\n请输入您的**当前密码**进行验证：").send()
-    res = await cl.AskUserMessage(content="", type="text", timeout=120).send()
-    if not res:
-        await cl.Message(content="⏰ 操作超时，已取消修改密码。").send()
-        return
-
-    old_password = res["output"].strip()
-    if users_db[username]["password"] != old_password:
-        await cl.Message(content="❌ 当前密码输入错误，已取消操作。").send()
-        return
-
-    # 第二步：输入新密码
-    await cl.Message(content="✅ 验证通过！请输入您的**新密码**（至少 4 个字符）：").send()
-    res = await cl.AskUserMessage(content="", type="text", timeout=120).send()
-    if not res:
-        await cl.Message(content="⏰ 操作超时，已取消修改密码。").send()
-        return
-
-    new_password = res["output"].strip()
-    if len(new_password) < 4:
-        await cl.Message(content="❌ 新密码长度不能少于 4 个字符，已取消操作。").send()
-        return
-
-    # 第三步：确认新密码
-    await cl.Message(content="请**再次输入**新密码进行确认：").send()
-    res = await cl.AskUserMessage(content="", type="text", timeout=120).send()
-    if not res:
-        await cl.Message(content="⏰ 操作超时，已取消修改密码。").send()
-        return
-
-    confirm_password = res["output"].strip()
-    if new_password != confirm_password:
-        await cl.Message(content="❌ 两次输入的密码不一致，已取消操作。").send()
-        return
-
-    # 第四步：更新密码
-    users_db[username]["password"] = new_password
-    _update_user_in_db(username, password=new_password)
-
-    await cl.Message(content="✅ **密码修改成功！**\n\n下次登录时请使用新密码。").send()
-    print(f"[Users] 用户 {username} 已通过 /password 命令修改密码")
-
-
-
-async def show_register_form():
-    """Show user registration form for admin"""
-    # 使用 Action 或更清晰的输入方式
-    await cl.Message(content="📝 **用户注册**\n\n请输入新用户的用户名：").send()
-
-    res = await cl.AskUserMessage(
-        content="",
-        type="text"
-    ).send()
-
-    if not res or not res.get("output"):
-        await cl.Message(content="❌ 注册已取消。").send()
-        return
-
-    new_username = res.get("output").strip()
-
-    if new_username in users_db:
-        await cl.Message(content=f"❌ 用户 **{new_username}** 已存在。").send()
-        return
-
-    await cl.Message(content=f"请为 **{new_username}** 设置密码：").send()
-    
-    res = await cl.AskUserMessage(
-        content="",
-        type="password"
-    ).send()
-
-    if not res or not res.get("output"):
-        await cl.Message(content="❌ 注册已取消。").send()
-        return
-
-    new_password = res.get("output")
-
-    # Ask for role
-    await cl.Message(content="请选择用户角色（输入 1 为普通用户，2 为管理员）：").send()
-    
-    res = await cl.AskUserMessage(
-        content="",
-        type="text"
-    ).send()
-
-    role = "user"
-    if res and res.get("output") == "2":
-        role = "admin"
-
-    if register_user(new_username, new_password, role):
-        await cl.Message(
-            content=f"✅ 用户 **{new_username}** 注册成功！\n\n"
-                    f"角色：{'管理员' if role == 'admin' else '普通用户'}"
-        ).send()
-    else:
-        await cl.Message(content="❌ 注册失败。").send()
-
-
-async def list_users():
-    """User management system (admin only)"""
-    while True:
-        # 显示用户列表
-        user_list = []
-        for idx, (username, data) in enumerate(users_db.items(), 1):
-            role_display = "👑 管理员" if data["role"] == "admin" else "👤 普通用户"
-            user_list.append(f"{idx}. **{username}** | {role_display}")
-
-        content = "📋 **用户管理系统**\n\n"
-        content += "当前用户列表：\n" + "\n".join(user_list) if user_list else "暂无用户"
-        content += "\n\n**操作选项：**"
-        content += "\n1. 注册新用户"
-        content += "\n2. 删除用户"
-        content += "\n3. 重置用户密码"
-        content += "\n4. 修改用户角色"
-        content += "\n5. 查看用户详情"
-        content += "\n0. 退出用户管理"
-        
-        await cl.Message(content=content).send()
-        
-        # 获取用户选择
-        res = await cl.AskUserMessage(content="请输入操作编号：", type="text").send()
-        
-        if not res or not res.get("output"):
-            await cl.Message(content="已退出用户管理。").send()
-            break
-        
-        choice = res.get("output").strip()
-        
-        if choice == "0":
-            await cl.Message(content="👋 已退出用户管理。").send()
-            break
-        elif choice == "1":
-            await show_register_form()
-        elif choice == "2":
-            await delete_user_form()
-        elif choice == "3":
-            await reset_password_form()
-        elif choice == "4":
-            await change_role_form()
-        elif choice == "5":
-            await show_user_details()
-        else:
-            await cl.Message(content="❌ 无效的选择，请重新输入。").send()
-
-
-async def delete_user_form():
-    """Delete user form"""
-    await cl.Message(content="🗑️ **删除用户**\n\n请输入要删除的用户名：").send()
-    
-    res = await cl.AskUserMessage(content="", type="text").send()
-    
-    if not res or not res.get("output"):
-        await cl.Message(content="❌ 操作已取消。").send()
-        return
-    
-    username = res.get("output").strip()
-    
-    if username not in users_db:
-        await cl.Message(content=f"❌ 用户 **{username}** 不存在。").send()
-        return
-    
-    if username == ADMIN_USERNAME:
-        await cl.Message(content="❌ 不能删除默认管理员账户。").send()
-        return
-    
-    # 确认删除
-    await cl.Message(content=f"⚠️ 确定要删除用户 **{username}** 吗？\n输入 **y** 确认删除，输入 **n** 取消：").send()
-    
-    res = await cl.AskUserMessage(content="", type="text").send()
-    
-    if res and res.get("output") and res.get("output").strip().lower() == "y":
-        del users_db[username]
-        _delete_user_from_db(username)
-        await cl.Message(content=f"✅ 用户 **{username}** 已删除。").send()
-    else:
-        await cl.Message(content="❌ 删除操作已取消。").send()
-
-
-async def reset_password_form():
-    """Reset user password form"""
-    await cl.Message(content="🔑 **重置密码**\n\n请输入要重置密码的用户名：").send()
-    
-    res = await cl.AskUserMessage(content="", type="text").send()
-    
-    if not res or not res.get("output"):
-        await cl.Message(content="❌ 操作已取消。").send()
-        return
-    
-    username = res.get("output").strip()
-    
-    if username not in users_db:
-        await cl.Message(content=f"❌ 用户 **{username}** 不存在。").send()
-        return
-    
-    await cl.Message(content=f"请为用户 **{username}** 设置新密码：").send()
-    
-    res = await cl.AskUserMessage(content="", type="password").send()
-    
-    if not res or not res.get("output"):
-        await cl.Message(content="❌ 操作已取消。").send()
-        return
-    
-    new_password = res.get("output")
-    users_db[username]["password"] = new_password
-    _update_user_in_db(username, password=new_password)
-    
-    await cl.Message(content=f"✅ 用户 **{username}** 的密码已重置。").send()
-
-
-async def change_role_form():
-    """Change user role form"""
-    await cl.Message(content="👤 **修改用户角色**\n\n请输入要修改的用户名：").send()
-    
-    res = await cl.AskUserMessage(content="", type="text").send()
-    
-    if not res or not res.get("output"):
-        await cl.Message(content="❌ 操作已取消。").send()
-        return
-    
-    username = res.get("output").strip()
-    
-    if username not in users_db:
-        await cl.Message(content=f"❌ 用户 **{username}** 不存在。").send()
-        return
-    
-    if username == ADMIN_USERNAME:
-        await cl.Message(content="❌ 不能修改默认管理员的角色。").send()
-        return
-    
-    current_role = users_db[username]["role"]
-    await cl.Message(
-        content=f"用户 **{username}** 当前角色：**{current_role}**\n\n"
-                f"请选择新角色：\n"
-                f"1. 普通用户\n"
-                f"2. 管理员"
-    ).send()
-    
-    res = await cl.AskUserMessage(content="", type="text").send()
-    
-    if not res or not res.get("output"):
-        await cl.Message(content="❌ 操作已取消。").send()
-        return
-    
-    choice = res.get("output").strip()
-    
-    if choice == "1":
-        users_db[username]["role"] = "user"
-        _update_user_in_db(username, role="user")
-        await cl.Message(content=f"✅ 用户 **{username}** 已设置为普通用户。").send()
-    elif choice == "2":
-        users_db[username]["role"] = "admin"
-        _update_user_in_db(username, role="admin")
-        await cl.Message(content=f"✅ 用户 **{username}** 已设置为管理员。").send()
-    else:
-        await cl.Message(content="❌ 无效的选择。").send()
-
-
-async def show_user_details():
-    """Show detailed user information"""
-    await cl.Message(content="� **查看用户详情**\n\n请输入要查看的用户名：").send()
-    
-    res = await cl.AskUserMessage(content="", type="text").send()
-    
-    if not res or not res.get("output"):
-        await cl.Message(content="❌ 操作已取消。").send()
-        return
-    
-    username = res.get("output").strip()
-    
-    if username not in users_db:
-        await cl.Message(content=f"❌ 用户 **{username}** 不存在。").send()
-        return
-    
-    data = users_db[username]
-    role_display = "👑 管理员" if data["role"] == "admin" else "👤 普通用户"
-    
-    details = f"📋 **用户详情：{username}**\n\n"
-    details += f"**角色：** {role_display}\n"
-    
-    await cl.Message(content=details).send()
-
-
-@cl.set_starters
-async def set_starters():
-    """Set starter messages for the chat interface"""
-    return [
-        cl.Starter(
-            label="考试大纲",
-            message="请介绍一下计算机三级网络技术的考试大纲和主要内容",
-            icon="/public/icons/book-open.svg",
-        ),
-        cl.Starter(
-            label="备考建议",
-            message="给我一些计算机三级网络技术的备考建议和学习计划",
-            icon="/public/icons/lightbulb.svg",
-        ),
-        cl.Starter(
-            label="网络基础",
-            message="解释一下计算机网络的基本概念和OSI七层模型",
-            icon="/public/icons/globe.svg",
-        ),
-        cl.Starter(
-            label="IP地址",
-            message="详细讲解IP地址的分类、子网划分和CIDR表示法",
-            icon="/public/icons/network.svg",
-        ),
-        cl.Starter(
-            label="每日一练",
-            message="开始每日一练",
-            icon="/public/icons/pencil-line.svg",
-        ),
-    ]
-
-
-async def configure_model():
-    """Configure Coze model parameters (Service Identity Token and Bot ID)"""
-    global COZE_JWT_TOKEN, COZE_BOT_ID
-
-    # 显示当前配置状态
-    current_jwt_status = "已配置" if COZE_JWT_TOKEN else "未配置"
-    current_bot_status = COZE_BOT_ID if COZE_BOT_ID else "未配置"
-    
-    await cl.Message(
-        content=f"🔧 **配置模型参数**\n\n"
-                f"当前配置状态：\n"
-                f"- Service Identity Token: {current_jwt_status}\n"
-                f"- Bot ID: {current_bot_status}\n\n"
-                f"请选择要更新的参数："
-    ).send()
-
-    # 询问是否更新 Service Identity Token
-    await cl.Message(content="是否更新 Service Identity Token？\n输入 **y** 更新，输入 **n** 跳过：").send()
-    
-    res = await cl.AskUserMessage(content="", type="text").send()
-    
-    new_jwt_token = COZE_JWT_TOKEN  # 默认保持原值
-    if res and res.get("output") and res.get("output").strip().lower() == "y":
-        await cl.Message(content="请输入新的 Service Identity Token：").send()
-        
-        res = await cl.AskUserMessage(content="", type="text").send()
-        
-        if res and res.get("output"):
-            new_jwt_token = res.get("output").strip()
-        else:
-            await cl.Message(content="❌ 输入无效，保持原配置。").send()
-
-    # 询问是否更新 Bot ID
-    await cl.Message(content="是否更新 Bot ID？\n输入 **y** 更新，输入 **n** 跳过：").send()
-    
-    res = await cl.AskUserMessage(content="", type="text").send()
-    
-    new_bot_id = COZE_BOT_ID  # 默认保持原值
-    if res and res.get("output") and res.get("output").strip().lower() == "y":
-        await cl.Message(content="请输入新的 Bot ID：").send()
-        
-        res = await cl.AskUserMessage(content="", type="text").send()
-        
-        if res and res.get("output"):
-            new_bot_id = res.get("output").strip()
-        else:
-            await cl.Message(content="❌ 输入无效，保持原配置。").send()
-
-    # 检查是否有变更
-    jwt_changed = new_jwt_token != COZE_JWT_TOKEN
-    bot_changed = new_bot_id != COZE_BOT_ID
-    
-    if not jwt_changed and not bot_changed:
-        await cl.Message(content="ℹ️ 配置未变更。").send()
-        return
-
-    # Update configuration
-    COZE_JWT_TOKEN = new_jwt_token
-    COZE_BOT_ID = new_bot_id
-    config_storage["COZE_JWT_TOKEN"] = new_jwt_token
-    config_storage["COZE_BOT_ID"] = new_bot_id
-    _save_config_to_db("COZE_JWT_TOKEN", new_jwt_token)
-    _save_config_to_db("COZE_BOT_ID", new_bot_id)
-
-    # Reinitialize Coze client with new token
-    coze = CozeAPI(new_jwt_token, new_bot_id)
-    cl.user_session.set("coze", coze)
-
-    # 显示更新摘要
-    changes = []
-    if jwt_changed:
-        changes.append("Service Identity Token")
-    if bot_changed:
-        changes.append("Bot ID")
-    
-    await cl.Message(
-        content=f"✅ **模型参数配置成功！**\n\n"
-                f"已更新：{', '.join(changes)}\n"
-                f"Service Identity Token: {'*' * 10}\n"
-                f"Bot ID: {new_bot_id}\n\n"
-                f"新的配置已生效。"
-    ).send()
 
 
 @app.get("/api/admin/auth/check")
@@ -2836,6 +2383,37 @@ async def update_user_password(username: str, request: Request):
         return JSONResponse({"success": True, "message": "密码更新成功"})
     except Exception as e:
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/account/password")
+async def change_own_password(request: Request):
+    """当前登录用户自助修改密码（供个人中心弹窗调用）"""
+    username = verify_user_from_request(request)
+    if not username:
+        return JSONResponse({"success": False, "error": "登录状态已失效，请重新登录"}, status_code=401)
+    if username not in users_db:
+        return JSONResponse({"success": False, "error": "用户不存在"}, status_code=404)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "error": "请求格式错误"}, status_code=400)
+
+    current_password = (body.get("current_password") or "").strip()
+    new_password = (body.get("new_password") or "").strip()
+
+    if users_db[username]["password"] != current_password:
+        return JSONResponse({"success": False, "error": "当前密码不正确"}, status_code=400)
+    if len(new_password) < 4:
+        return JSONResponse({"success": False, "error": "新密码长度不能少于 4 个字符"}, status_code=400)
+    if new_password == current_password:
+        return JSONResponse({"success": False, "error": "新密码不能与当前密码相同"}, status_code=400)
+
+    users_db[username]["password"] = new_password
+    _update_user_in_db(username, password=new_password)
+    log_activity(username, "修改登录密码", actor=username)
+    print(f"[Users] 用户 {username} 通过个人中心修改了密码")
+    return JSONResponse({"success": True, "message": "密码修改成功，下次登录请使用新密码"})
 
 
 @app.delete("/api/admin/users/{username}")
