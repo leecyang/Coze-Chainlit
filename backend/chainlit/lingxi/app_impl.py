@@ -69,14 +69,11 @@ def get_data_layer():
 
 
 
+# COZE_BOT_ID：每日一练工作流 Bot，同时是注册表中未绑定专属 Bot 的
+# 智能体的运行时回退。各智能体的专属 Bot ID 由注册表（agent_definitions）
+# 管理，不再走环境变量。
 COZE_BOT_ID = os.getenv("COZE_BOT_ID")
 COZE_BASE_URL = os.getenv("COZE_BASE_URL", "https://api.coze.cn")
-
-# 多智能体：各教学 Agent 的专属 Coze Bot（留空则回退到 COZE_BOT_ID）
-# COZE_BOT_ID 本身保留给每日一练工作流 Bot（Daily_Practice_Agent）
-COZE_BOT_ID_NOVICE = os.getenv("COZE_BOT_ID_NOVICE", "")
-COZE_BOT_ID_DEBATE = os.getenv("COZE_BOT_ID_DEBATE", "")
-COZE_BOT_ID_EXPERT = os.getenv("COZE_BOT_ID_EXPERT", "")
 
 # JWT Service Account Configuration (for production)
 COZE_JWT_TOKEN = os.getenv("COZE_JWT_TOKEN")
@@ -97,27 +94,17 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin")
 # Configuration storage for runtime updates
 config_storage = {
     "COZE_BOT_ID": COZE_BOT_ID,
-    "COZE_BOT_ID_NOVICE": COZE_BOT_ID_NOVICE,
-    "COZE_BOT_ID_DEBATE": COZE_BOT_ID_DEBATE,
-    "COZE_BOT_ID_EXPERT": COZE_BOT_ID_EXPERT,
     "COZE_JWT_TOKEN": COZE_JWT_TOKEN,
     "COZE_JWT_EXPIRES_AT": COZE_JWT_EXPIRES_AT,
     "COZE_BASE_URL": COZE_BASE_URL,
 }
 
-OPTIONAL_AGENT_BOT_KEYS = {
-    "COZE_BOT_ID_NOVICE",
-    "COZE_BOT_ID_DEBATE",
-    "COZE_BOT_ID_EXPERT",
-}
-
 
 def get_agent_bot_id(key: str) -> str:
-    """解析某个 Agent 的 Coze Bot ID。
+    """解析运行时回退 Bot ID。
 
-    调用时读取 config_storage（管理后台 PUT /api/admin/config 或 /model
-    命令的改动即时生效）；对应键为空时回退到主 COZE_BOT_ID，
-    保证未创建专属 Bot 前系统以单 Bot 降级模式照常工作。
+    注册表中未绑定专属 Bot 的智能体经此回退到主 COZE_BOT_ID；
+    调用时读取 config_storage，/model 命令的改动即时生效。
     """
     value = (config_storage.get(key) or "").strip()
     if value:
@@ -413,7 +400,7 @@ def _load_config_from_db():
         cursor = conn.execute('SELECT key, value FROM app_config')
         for row in cursor:
             key, value = row
-            if key in ACTIVE_CONFIG_KEYS and (value or key in OPTIONAL_AGENT_BOT_KEYS):
+            if key in ACTIVE_CONFIG_KEYS and value:
                 config_storage[key] = value
                 loaded += 1
         conn.close()
@@ -2821,8 +2808,9 @@ async def get_admin_config(request: Request):
         except:
             pass
     
+    # 注意：不再返回 bot_id——默认 Coze Bot 属于运行时回退细节，
+    # 各智能体的 Bot 绑定统一在智能体注册表中管理和展示
     return JSONResponse({
-        "bot_id": COZE_BOT_ID,
         "has_service_token": bool(COZE_JWT_TOKEN),
         "masked_service_token": _mask_secret(COZE_JWT_TOKEN),
         "jwt_expires_at": jwt_expires_at,

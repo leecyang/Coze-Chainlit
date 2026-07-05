@@ -5,11 +5,10 @@ from pathlib import Path
 from typing import Set
 
 
+# 注意：各智能体的专属 Bot ID 由多智能体注册表（agent_definitions.bot_id）
+# 管理，不再使用 COZE_BOT_ID_* 环境变量。
 ACTIVE_CONFIG_KEYS: Set[str] = {
     "COZE_BOT_ID",
-    "COZE_BOT_ID_NOVICE",
-    "COZE_BOT_ID_DEBATE",
-    "COZE_BOT_ID_EXPERT",
     "COZE_JWT_TOKEN",
     "COZE_JWT_EXPIRES_AT",
     "COZE_BASE_URL",

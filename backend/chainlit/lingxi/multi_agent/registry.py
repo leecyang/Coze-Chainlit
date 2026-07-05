@@ -260,7 +260,9 @@ def _read_route_config(conn: sqlite3.Connection, only_enabled: bool = True) -> R
         off_topic_blacklist=global_words["off_topic"],
         domain_terms=global_words["domain"],
         loose_trigger_max_len=_int(settings.get("loose_trigger_max_len"), 12),
-        off_topic_reply=settings.get("off_topic_reply", ""),
+        # SQLite 字符串字面量不处理转义序列：种子迁移（以及管理端可能录入）
+        # 的字面 \n 需要在加载时还原为真实换行，否则会原样输出给用户
+        off_topic_reply=(settings.get("off_topic_reply") or "").replace("\\n", "\n"),
     )
 
 
@@ -366,7 +368,7 @@ def _validate_agent_id(agent_id: str) -> str:
     return value
 
 
-def _validate_agent_payload(payload: Dict[str, Any], *, creating: bool) -> Dict[str, Any]:
+def _validate_agent_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     data = {
         "display_name": (payload.get("display_name") or "").strip(),
         "description": (payload.get("description") or "").strip(),
@@ -377,7 +379,7 @@ def _validate_agent_payload(payload: Dict[str, Any], *, creating: bool) -> Dict[
         "priority": _int(payload.get("priority"), 100),
         "context_policy": (payload.get("context_policy") or "on_switch_recent_2").strip(),
     }
-    if creating and not data["display_name"]:
+    if not data["display_name"]:
         raise ValueError("请填写智能体中文名称")
     if data["agent_type"] not in _AGENT_TYPES:
         raise ValueError("智能体类型只能是 coze_chat 或 coze_workflow")
@@ -388,7 +390,7 @@ def _validate_agent_payload(payload: Dict[str, Any], *, creating: bool) -> Dict[
 
 def create_agent(db_path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     agent_id = _validate_agent_id(payload.get("agent_id", ""))
-    data = _validate_agent_payload(payload, creating=True)
+    data = _validate_agent_payload(payload)
     with _connect(db_path) as conn:
         try:
             conn.execute(
@@ -420,12 +422,28 @@ def update_agent(db_path: str, agent_id: str, payload: Dict[str, Any]) -> Dict[s
     agent_id = _validate_agent_id(agent_id)
     with _connect(db_path) as conn:
         row = conn.execute(
-            "SELECT agent_id, locked FROM agent_definitions WHERE agent_id = ?",
+            """
+            SELECT agent_id, display_name, description, agent_type, bot_id,
+                   enabled, locked, exclusive, priority, context_policy
+            FROM agent_definitions WHERE agent_id = ?
+            """,
             (agent_id,),
         ).fetchone()
         if not row:
             raise ValueError("智能体不存在")
-        data = _validate_agent_payload(payload, creating=False)
+        # 合并式部分更新：载荷未携带的字段保留原值，
+        # 避免局部 PUT（如卡片上的快速启停）清空既有配置
+        merged = {
+            "display_name": payload.get("display_name", row["display_name"]),
+            "description": payload.get("description", row["description"]),
+            "agent_type": payload.get("agent_type", row["agent_type"]),
+            "bot_id": payload.get("bot_id", row["bot_id"]),
+            "enabled": payload.get("enabled", _bool(row["enabled"])),
+            "exclusive": payload.get("exclusive", _bool(row["exclusive"])),
+            "priority": payload.get("priority", row["priority"]),
+            "context_policy": payload.get("context_policy", row["context_policy"]),
+        }
+        data = _validate_agent_payload(merged)
         if _bool(row["locked"]):
             conn.execute(
                 """
@@ -491,11 +509,24 @@ def save_agent_subscriptions(db_path: str, agent_id: str, subscriptions: Iterabl
             row["topic"]
             for row in conn.execute("SELECT topic FROM route_topics").fetchall()
         }
+        exclusive_topics = {
+            row["topic"]
+            for row in conn.execute("SELECT topic FROM route_topics WHERE is_exclusive = 1").fetchall()
+        }
         conn.execute("DELETE FROM agent_subscriptions WHERE agent_id = ?", (agent_id,))
         for item in rows:
             topic = (item.get("topic") or "").strip()
             if topic not in valid_topics:
                 raise ValueError(f"Topic 不存在: {topic}")
+            # 独占 topic 只允许一个订阅者：否则管线重建时 bus.subscribe
+            # 会抛错导致整个消息管线不可用
+            if topic in exclusive_topics:
+                holder = conn.execute(
+                    "SELECT agent_id FROM agent_subscriptions WHERE topic = ? AND agent_id != ? LIMIT 1",
+                    (topic, agent_id),
+                ).fetchone()
+                if holder:
+                    raise ValueError(f"独占 topic {topic} 已被 {holder['agent_id']} 订阅")
             conn.execute(
                 """
                 INSERT INTO agent_subscriptions

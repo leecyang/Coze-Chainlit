@@ -23,7 +23,14 @@ from .message import (
     new_user_message,
 )
 from .normalizer import normalize
-from .registry import RegistrySnapshot, load_registry
+from .registry import (
+    RegistrySnapshot,
+    create_agent,
+    delete_agent,
+    load_registry,
+    save_agent_subscriptions,
+    update_agent,
+)
 from .router import is_practice_exit, route
 from .selector import select
 
@@ -188,6 +195,60 @@ def test_registry() -> None:
     })
     check("每日一练类型", REGISTRY.agents["Daily_Practice_Agent"].agent_type, "coze_workflow")
     check("question.solve订阅数", len(_bids_for(TOPIC_QUESTION_SOLVE)), 3)
+    # SQLite 字面量不处理 \n 转义：加载层必须把种子里的字面 \n 还原为真实换行
+    reply = REGISTRY.route_config.off_topic_reply
+    check("拒答模板含真实换行", "\n" in reply and "\\n" not in reply, True)
+
+
+def test_registry_crud(db_path: str) -> None:
+    print("[Registry] CRUD 与部分更新")
+    create_agent(db_path, {
+        "agent_id": "Test_Agent",
+        "display_name": "测试智能体",
+        "description": "自测用",
+        "agent_type": "coze_chat",
+        "bot_id": "bot123",
+        "priority": 50,
+    })
+    # 部分更新（如卡片快速启停）只应改动携带的字段
+    payload = update_agent(db_path, "Test_Agent", {"enabled": False})
+    agent = next(a for a in payload["agents"] if a["agent_id"] == "Test_Agent")
+    check("部分更新保留名称", agent["display_name"], "测试智能体")
+    check("部分更新保留bot", agent["bot_id"], "bot123")
+    check("部分更新enabled生效", agent["enabled"], False)
+    try:
+        update_agent(db_path, "Test_Agent", {"display_name": ""})
+        check("清空名称被拒绝", "no-error", "ValueError")
+    except ValueError:
+        check("清空名称被拒绝", "ValueError", "ValueError")
+    # 锁定智能体只允许改 bot_id / enabled
+    payload = update_agent(db_path, "Daily_Practice_Agent", {"bot_id": "wf-bot", "display_name": "改名尝试"})
+    locked = next(a for a in payload["agents"] if a["agent_id"] == "Daily_Practice_Agent")
+    check("锁定智能体bot可改", locked["bot_id"], "wf-bot")
+    check("锁定智能体名称不可改", locked["display_name"], "每日一练")
+    # 独占 topic 已有订阅者（每日一练）时，其他智能体不得再订阅——
+    # 否则管线重建时 bus.subscribe 抛错导致整个消息管线不可用
+    try:
+        save_agent_subscriptions(db_path, "Test_Agent", [
+            {"topic": "practice.request", "base_bid": 1.0},
+        ])
+        check("独占topic订阅冲突被拒", "no-error", "ValueError")
+    except ValueError:
+        check("独占topic订阅冲突被拒", "ValueError", "ValueError")
+    # 教学 topic 正常保存
+    payload = save_agent_subscriptions(db_path, "Test_Agent", [
+        {"topic": "concept.explain", "base_bid": 0.55, "basic_bonus": 0.05},
+    ])
+    agent = next(a for a in payload["agents"] if a["agent_id"] == "Test_Agent")
+    check("教学topic订阅保存", agent["subscription_count"], 1)
+
+    payload = delete_agent(db_path, "Test_Agent")
+    check("删除后不存在", any(a["agent_id"] == "Test_Agent" for a in payload["agents"]), False)
+    try:
+        delete_agent(db_path, "Daily_Practice_Agent")
+        check("系统内置不可删", "no-error", "ValueError")
+    except ValueError:
+        check("系统内置不可删", "ValueError", "ValueError")
 
 
 def test_bus() -> None:
@@ -210,6 +271,15 @@ def test_bus() -> None:
     check("教学topic多订阅", len(bus.subscribers_for(TOPIC_CONCEPT_EXPLAIN)), 2)
     check("练习answer暂无订阅", bus.subscribers_for(TOPIC_PRACTICE_ANSWER), [])
 
+    # 注册表标记 is_exclusive 的自定义 topic 同样获得单订阅者语义
+    custom_bus = MessageBus({"custom.flow"})
+    custom_bus.subscribe("custom.flow", _Stub("first"))
+    try:
+        custom_bus.subscribe("custom.flow", _Stub("second"))
+        check("自定义独占topic强制单订阅", "no-error", "ValueError")
+    except ValueError:
+        check("自定义独占topic强制单订阅", "ValueError", "ValueError")
+
 
 def test_normalizer() -> None:
     print("[Normalizer] 标准化")
@@ -226,6 +296,7 @@ def main() -> int:
         run_migrations(db_path)
         REGISTRY = load_registry(db_path)
         test_registry()
+        test_registry_crud(db_path)
     test_normalizer()
     test_router()
     test_selector()

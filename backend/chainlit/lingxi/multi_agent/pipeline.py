@@ -50,9 +50,16 @@ class MultiAgentPipeline:
     def __init__(self, deps: AgentDeps, db_path: str) -> None:
         self.deps = deps
         self.db_path = db_path
-        self.bus = MessageBus()
         self.snapshot = load_registry(db_path)
         self.route_config = self.snapshot.route_config
+        # 独占 topic = 内置练习 topic ∪ 注册表中标记 is_exclusive 的 topic，
+        # 让管理端新建的独占 topic 真正获得单订阅者语义
+        self.exclusive_topics = frozenset(EXCLUSIVE_TOPICS) | {
+            topic
+            for topic, config in self.route_config.topics.items()
+            if config.is_exclusive
+        }
+        self.bus = MessageBus(self.exclusive_topics)
         self.practice_agent = DailyPracticeAgent(
             deps,
             self.snapshot.agents.get("Daily_Practice_Agent"),
@@ -64,7 +71,12 @@ class MultiAgentPipeline:
             self.agents[agent.name] = agent
         for agent in self.agents.values():
             for topic in agent.subscribed_topics:
-                self.bus.subscribe(topic, agent)
+                try:
+                    self.bus.subscribe(topic, agent)
+                except ValueError as e:
+                    # 防御：脏数据（独占 topic 多订阅者）降级为跳过该订阅，
+                    # 绝不让整个消息管线构建失败
+                    print(f"[MultiAgent] 跳过订阅冲突 {agent.name} -> {topic}: {e}")
         print(
             f"[MultiAgent] Registry loaded version={self.snapshot.version} "
             f"agents={list(self.agents)}"
@@ -131,6 +143,11 @@ class MultiAgentPipeline:
                 await self._stream_template(cl_msg, "每日一练智能体当前已停用，请联系管理员启用后再开始练习。")
                 self._bookkeep(inp.text, task_msg.topic, None, "每日一练已停用")
                 return
+            if task_msg.topic in self.exclusive_topics:
+                # 其他独占 topic 无订阅者时不回退教学智能体，保持独占语义
+                await self._stream_template(cl_msg, "该功能对应的智能体当前未启用，请联系管理员在智能体注册表中配置。")
+                self._bookkeep(inp.text, task_msg.topic, None, "独占智能体未启用")
+                return
             subscribers = [
                 agent for agent in self.agents.values()
                 if agent.name != self.practice_agent.name
@@ -140,7 +157,7 @@ class MultiAgentPipeline:
                 self._bookkeep(inp.text, task_msg.topic, None, "无可用教学智能体")
                 return
 
-        if task_msg.topic in (TOPIC_PRACTICE_REQUEST, TOPIC_PRACTICE_ANSWER):
+        if task_msg.topic in self.exclusive_topics:
             winner = subscribers[0]  # 独占型 topic：唯一订阅者
         else:
             bids: List[Tuple[str, float]] = [
