@@ -3,6 +3,7 @@ import json
 import sqlite3
 import asyncio
 import aiohttp
+import time
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
 from dotenv import load_dotenv
@@ -33,6 +34,8 @@ from fastapi.responses import JSONResponse
 from fastapi import HTTPException
 from chainlit.auth.cookie import get_token_from_cookies
 from chainlit.auth.jwt import decode_jwt
+from sqlalchemy import text as sa_text
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse as StarletteJSONResponse
 
@@ -57,6 +60,71 @@ DB_PATH = resolve_db_path()
 print(f"[Database] Using database path: {DB_PATH}")
 run_migrations(DB_PATH)
 
+
+SQLITE_BUSY_TIMEOUT_MS = 30000
+SQLITE_BUSY_TIMEOUT_SECONDS = SQLITE_BUSY_TIMEOUT_MS / 1000
+
+
+def _connect_db(timeout: float = SQLITE_BUSY_TIMEOUT_SECONDS) -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, timeout=timeout)
+    conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def _configure_sqlite_database() -> None:
+    try:
+        conn = _connect_db()
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[Database] SQLite 并发配置失败: {e}")
+
+
+_configure_sqlite_database()
+
+
+def _is_sqlite_locked_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return "database is locked" in message or "database table is locked" in message
+
+
+class LingxiSQLAlchemyDataLayer(SQLAlchemyDataLayer):
+    async def execute_sql(self, query: str, parameters: dict):
+        parameterized_query = sa_text(query)
+        max_attempts = 3 if self._conninfo.startswith("sqlite") else 1
+        for attempt in range(max_attempts):
+            async with self.async_session() as session:
+                try:
+                    await session.begin()
+                    result = await session.execute(parameterized_query, parameters)
+                    await session.commit()
+                    if result.returns_rows:
+                        clean_json_result = self.clean_result(
+                            [dict(row._mapping) for row in result.fetchall()]
+                        )
+                        assert isinstance(clean_json_result, list) or isinstance(
+                            clean_json_result, int
+                        )
+                        return clean_json_result
+                    return result.rowcount
+                except SQLAlchemyError as e:
+                    await session.rollback()
+                    if attempt < max_attempts - 1 and _is_sqlite_locked_error(e):
+                        await asyncio.sleep(0.2 * (attempt + 1))
+                        continue
+                    print(f"[DataLayer] SQLAlchemy 执行失败: {e}")
+                    return None
+                except Exception as e:
+                    await session.rollback()
+                    print(f"[DataLayer] SQLAlchemy 未预期错误: {e}")
+                    return None
+        return None
+
+
 @cl.data_layer
 def get_data_layer():
     # Ensure directory exists
@@ -65,7 +133,10 @@ def get_data_layer():
         os.makedirs(db_dir)
     
     # 注意：数据库由 Chainlit 自动管理，保留历史数据
-    return SQLAlchemyDataLayer(conninfo=f"sqlite+aiosqlite:///{DB_PATH}")
+    return LingxiSQLAlchemyDataLayer(
+        conninfo=f"sqlite+aiosqlite:///{DB_PATH}",
+        connect_args={"timeout": SQLITE_BUSY_TIMEOUT_SECONDS},
+    )
 
 
 
@@ -118,7 +189,7 @@ import sqlite3
 def _ensure_app_users_table():
     """确保 app_users 表存在（同步方式，仅在启动时使用）"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         conn.execute("""
             CREATE TABLE IF NOT EXISTS app_users (
                 "username" TEXT PRIMARY KEY,
@@ -137,7 +208,7 @@ def _load_users_from_db():
     _ensure_app_users_table()
     loaded = 0
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         cursor = conn.execute('SELECT username, password, role FROM app_users')
         for row in cursor:
             username, password, role = row
@@ -154,7 +225,7 @@ def _load_users_from_db():
 def _save_user_to_db(username: str, password: str, role: str):
     """将用户保存/更新到数据库（同步方式，操作极轻量）"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         conn.execute(
             'INSERT OR REPLACE INTO app_users (username, password, role) VALUES (?, ?, ?)',
             (username, password, role)
@@ -167,7 +238,7 @@ def _save_user_to_db(username: str, password: str, role: str):
 def _delete_user_from_db(username: str):
     """从数据库删除用户"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         conn.execute('DELETE FROM app_users WHERE username = ?', (username,))
         conn.commit()
         conn.close()
@@ -179,7 +250,7 @@ def _update_user_in_db(username: str, **kwargs):
     if not kwargs:
         return
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         sets = []
         values = []
         for k, v in kwargs.items():
@@ -218,7 +289,7 @@ DEFAULT_PERSONA = "计网专家"
 def _ensure_persona_usage_table():
     """确保 persona_usage_logs 表存在"""
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=20)
+        conn = _connect_db(timeout=20)
         conn.execute('''CREATE TABLE IF NOT EXISTS persona_usage_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL,
@@ -239,23 +310,32 @@ def log_persona_usage(username: str, persona: str, thread_id: str = None):
     """记录一次人设使用"""
     if not persona:
         return
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=20)
-        conn.execute(
-            'INSERT INTO persona_usage_logs (username, persona, thread_id) VALUES (?, ?, ?)',
-            (username, persona, thread_id)
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"[PersonaUsage] 记录失败: {e}")
+    for attempt in range(3):
+        conn = None
+        try:
+            conn = _connect_db(timeout=20)
+            conn.execute(
+                'INSERT INTO persona_usage_logs (username, persona, thread_id) VALUES (?, ?, ?)',
+                (username, persona, thread_id)
+            )
+            conn.commit()
+            return
+        except Exception as e:
+            if attempt < 2 and _is_sqlite_locked_error(e):
+                time.sleep(0.2 * (attempt + 1))
+                continue
+            print(f"[PersonaUsage] 记录失败: {e}")
+            return
+        finally:
+            if conn is not None:
+                conn.close()
 
 # ==================== 配置持久化 ====================
 
 def _ensure_app_config_table():
     """确保 app_config 表存在"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         conn.execute("""
             CREATE TABLE IF NOT EXISTS app_config (
                 "key" TEXT PRIMARY KEY,
@@ -270,7 +350,7 @@ def _ensure_app_config_table():
 def _ensure_activity_logs_table():
     """确保 app_activity_logs 表存在"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         conn.execute("""
             CREATE TABLE IF NOT EXISTS app_activity_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -312,7 +392,7 @@ def log_activity(
     """记录用户活动"""
     try:
         _ensure_activity_logs_table()
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         conn.execute(
             """
             INSERT INTO app_activity_logs (username, action, actor, target, detail)
@@ -334,7 +414,7 @@ def log_admin_activity(actor: str, action: str, target: str = "", detail: str = 
 def _ensure_assignment_records_table():
     """确保作业记录表存在，兼容已部署但未跑最新 init_db.py 的数据库。"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         conn.execute("""
             CREATE TABLE IF NOT EXISTS assignment_records (
                 "id" INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -396,7 +476,7 @@ def _load_config_from_db():
     _ensure_app_config_table()
     loaded = 0
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         cursor = conn.execute('SELECT key, value FROM app_config')
         for row in cursor:
             key, value = row
@@ -421,7 +501,7 @@ def _load_config_from_db():
 def _save_config_to_db(key: str, value: str):
     """保存单个配置项到数据库"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         conn.execute(
             'INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)',
             (key, value or '')
@@ -442,7 +522,7 @@ _ensure_assignment_records_table()
 def _ensure_conversation_map_table():
     """确保 conversation_user_mapping 表存在"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         conn.execute("""
             CREATE TABLE IF NOT EXISTS conversation_user_mapping (
                 "conversation_id" TEXT PRIMARY KEY,
@@ -460,7 +540,7 @@ def _load_conversation_map_from_db():
     _ensure_conversation_map_table()
     loaded = 0
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         cursor = conn.execute('SELECT conversation_id, username FROM conversation_user_mapping')
         for row in cursor:
             conversation_user_map[row[0]] = row[1]
@@ -474,7 +554,7 @@ def _load_conversation_map_from_db():
 def _save_conversation_map_to_db(conversation_id: str, username: str):
     """保存会话映射到数据库"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         conn.execute(
             'INSERT OR REPLACE INTO conversation_user_mapping (conversation_id, username) VALUES (?, ?)',
             (conversation_id, username)
@@ -2017,7 +2097,7 @@ async def get_admin_stats(request: Request):
     
     recent_activity = []
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         cursor = conn.execute('SELECT username, action, created_at FROM app_activity_logs ORDER BY id DESC LIMIT 10')
         for row in cursor:
             username, action, created_at = row
@@ -2142,7 +2222,7 @@ async def get_admin_stats(request: Request):
     # 人设使用统计
     persona_stats = []
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         # 获取各人设的使用次数（总体，包含全局统计）
         cursor = conn.execute('''
             SELECT persona, COUNT(DISTINCT thread_id) as count 
@@ -2222,7 +2302,7 @@ async def get_admin_overview(request: Request, overview_range: str = "7d"):
     try:
         from datetime import timedelta
 
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         today_local = today.strftime("%Y-%m-%d %H:%M:%S")
         today_iso = today.isoformat()
@@ -2387,7 +2467,7 @@ async def get_admin_users(request: Request):
     where_sql = f"WHERE {' AND '.join(where)}" if where else ""
 
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         total = conn.execute(
             f"SELECT COUNT(*) FROM app_users u {where_sql}",
             params,
@@ -2443,7 +2523,7 @@ async def get_admin_user_detail(username: str, request: Request):
         return JSONResponse({"error": "用户不存在"}, status_code=404)
 
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         profile_row = conn.execute(
             """
             SELECT username, role, created_at
@@ -2991,7 +3071,7 @@ async def get_admin_conversations(request: Request):
     try:
         import ast
 
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         thread_personas = {}
         for tid, persona in conn.execute("""
             SELECT thread_id, persona
@@ -3076,7 +3156,7 @@ async def get_conversation_detail(thread_id: str, request: Request):
     try:
         import ast
 
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         thread_row = conn.execute(
             """
             SELECT id, name, userIdentifier, createdAt, metadata
@@ -3174,7 +3254,7 @@ async def get_admin_learning_records(request: Request):
     page, page_size, offset = _get_pagination(request)
     where_sql, params = _date_filter_from_request(request, "created_at")
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         total = conn.execute(f"SELECT COUNT(*) FROM practice_records {where_sql}", params).fetchone()[0]
         rows = conn.execute(
             f"""
@@ -3200,7 +3280,7 @@ async def get_admin_learning_mistakes(request: Request):
     page, page_size, offset = _get_pagination(request)
     where_sql, params = _date_filter_from_request(request, "created_at")
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         total = conn.execute(f"SELECT COUNT(*) FROM mistake_details {where_sql}", params).fetchone()[0]
         rows = conn.execute(
             f"""
@@ -3227,7 +3307,7 @@ async def get_admin_learning_assignments(request: Request):
     page, page_size, offset = _get_pagination(request)
     where_sql, params = _date_filter_from_request(request, "created_at")
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         total = conn.execute(f"SELECT COUNT(*) FROM assignment_records {where_sql}", params).fetchone()[0]
         rows = conn.execute(
             f"""
@@ -3264,7 +3344,7 @@ async def get_admin_audit(request: Request):
         params.extend([target, target])
     where_sql = f"WHERE {' AND '.join(where)}" if where else ""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect_db()
         total = conn.execute(f"SELECT COUNT(*) FROM app_activity_logs {where_sql}", params).fetchone()[0]
         rows = conn.execute(
             f"""

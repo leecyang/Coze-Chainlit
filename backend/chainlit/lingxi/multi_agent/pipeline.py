@@ -20,6 +20,7 @@ from .base import AgentDeps, SESSION_AGENT_CONVERSATIONS, BaseAgent
 from .bus import MessageBus
 from .memory import fetch_user_memory
 from .message import (
+    EXCLUSIVE_TOPICS,
     Message,
     TOPIC_AGENT_RESPONSE,
     TOPIC_OFF_TOPIC,
@@ -186,7 +187,12 @@ class MultiAgentPipeline:
     ) -> None:
         username = msg.payload.get("username", "unknown")
         try:
-            self.deps.log_usage(username, agent.display_name, thread_id)
+            await asyncio.to_thread(
+                self.deps.log_usage,
+                username,
+                agent.display_name,
+                thread_id,
+            )
         except Exception as e:
             print(f"[Pipeline] 记录使用日志失败: {e}")
 
