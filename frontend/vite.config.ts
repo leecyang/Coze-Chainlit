@@ -6,6 +6,7 @@ import svgr from 'vite-plugin-svgr';
 import tsconfigPaths from 'vite-tsconfig-paths';
 
 const backendTarget = 'http://127.0.0.1:8000';
+const buildSourcemap = process.env.VITE_BUILD_SOURCEMAP !== 'false';
 
 const authProxy = () => {
   const proxy = httpProxy.createProxyServer({
@@ -37,7 +38,7 @@ const authProxy = () => {
 
 export default defineConfig({
   build: {
-    sourcemap: true
+    sourcemap: buildSourcemap
   },
   server: {
     headers: {

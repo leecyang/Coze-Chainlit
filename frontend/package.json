@@ -5,7 +5,8 @@
   "scripts": {
     "preinstall": "npx only-allow pnpm",
     "dev": "vite",
-    "build": "pnpm run build:react-client && pnpm run build:app && pnpm run build:copilot",
+    "build": "pnpm run build:web && pnpm run build:copilot",
+    "build:web": "pnpm run build:react-client && pnpm run build:app",
     "build:app": "vite build",
     "build:react-client": "pnpm --dir libs/react-client build",
     "build:copilot": "pnpm --dir libs/copilot build",
