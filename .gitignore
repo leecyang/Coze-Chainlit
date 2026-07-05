@@ -35,6 +35,10 @@ backend/data/
 backend/.chainlit/*.db
 backend/users/
 data/
+!backend/chainlit/data/
+!backend/chainlit/data/**
+backend/chainlit/data/**/__pycache__/
+backend/chainlit/data/**/*.py[cod]
 users/
 *.db
 *.sqlite
