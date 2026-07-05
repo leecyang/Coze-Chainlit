@@ -314,6 +314,57 @@ function Pager({
   );
 }
 
+function ConversationDepthChart({ data }: { data?: Record<string, number> }) {
+  const entries = Object.entries(data || {}).filter(([, count]) => count > 0);
+  const total = entries.reduce((sum, [, count]) => sum + count, 0);
+  const colors = ['#2563eb', '#10b981', '#f59e0b', '#ef4444'];
+  let cursor = 0;
+  const gradient = entries.length
+    ? entries
+        .map(([, count], index) => {
+          const start = cursor;
+          cursor += (count / total) * 100;
+          return `${colors[index % colors.length]} ${start}% ${cursor}%`;
+        })
+        .join(', ')
+    : '#e5e7eb 0% 100%';
+
+  return (
+    <div className="grid gap-4 sm:grid-cols-[150px_1fr] sm:items-center">
+      <div
+        className="mx-auto grid aspect-square w-36 place-items-center rounded-full"
+        style={{ background: `conic-gradient(${gradient})` }}
+        aria-label="对话深度环形图"
+      >
+        <div className="grid h-20 w-20 place-items-center rounded-full bg-background text-center">
+          <div>
+            <div className="text-xl font-semibold">{total}</div>
+            <div className="text-xs text-muted-foreground">对话</div>
+          </div>
+        </div>
+      </div>
+      <div className="space-y-2">
+        {entries.length ? entries.map(([label, count], index) => (
+          <div key={label} className="flex items-center justify-between gap-3 text-sm">
+            <span className="flex items-center gap-2">
+              <span
+                className="h-2.5 w-2.5 rounded-full"
+                style={{ backgroundColor: colors[index % colors.length] }}
+              />
+              {label} 轮
+            </span>
+            <span className="text-muted-foreground">{count}</span>
+          </div>
+        )) : (
+          <div className="py-8 text-center text-sm text-muted-foreground">
+            暂无对话深度数据
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function AdminPage() {
   const [authorized, setAuthorized] = useState<boolean | null>(null);
   const [adminName, setAdminName] = useState('');
@@ -510,7 +561,10 @@ export default function AdminPage() {
   const loadConfig = async () => {
     const data = await lingxiFetch<AdminConfig>('/api/admin/config');
     setConfig(data || {});
-    setConfigDraft({ ...(data || {}), service_token: '' });
+    setConfigDraft({
+      base_url: data?.base_url,
+      service_token: ''
+    });
   };
 
   const loadAgents = async () => {
@@ -732,6 +786,8 @@ export default function AdminPage() {
     await run(async () => {
       const payload = { ...configDraft };
       if (!payload.service_token) delete payload.service_token;
+      delete payload.bot_id;
+      delete payload.jwt_expires_at;
       await lingxiFetch('/api/admin/config', {
         method: 'PUT',
         body: JSON.stringify(payload)
@@ -1088,13 +1144,8 @@ export default function AdminPage() {
                 <CardHeader>
                   <CardTitle className="text-base">对话深度</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-2">
-                  {Object.entries(overview?.conversation_depth || {}).map(([label, count]) => (
-                    <div key={label} className="flex items-center justify-between text-sm">
-                      <span>{label} 轮</span>
-                      <Badge variant="outline">{count}</Badge>
-                    </div>
-                  ))}
+                <CardContent>
+                  <ConversationDepthChart data={overview?.conversation_depth} />
                 </CardContent>
               </Card>
 
@@ -1513,7 +1564,7 @@ export default function AdminPage() {
                   <div className="space-y-2">
                     <Label>Bot ID</Label>
                     <Input
-                      placeholder="留空则回退到全局主 Bot ID"
+                      placeholder="留空则使用环境默认 Bot"
                       value={agentDraft.bot_id}
                       onChange={(event) => setAgentDraft({ ...agentDraft, bot_id: event.target.value })}
                     />
@@ -1764,15 +1815,11 @@ export default function AdminPage() {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-base">
                   <KeyRound className="h-4 w-4" />
-                  Coze 配置
+                  Coze 连接
                 </CardTitle>
               </CardHeader>
               <CardContent className="grid gap-4 xl:grid-cols-[1fr_320px]">
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label>全局主 Bot ID</Label>
-                    <Input value={configDraft.bot_id || ''} onChange={(event) => setConfigDraft({ ...configDraft, bot_id: event.target.value })} />
-                  </div>
+                <div className="grid gap-4">
                   <div className="space-y-2">
                     <Label>API Base URL</Label>
                     <Input value={configDraft.base_url || ''} onChange={(event) => setConfigDraft({ ...configDraft, base_url: event.target.value })} />
@@ -1781,19 +1828,11 @@ export default function AdminPage() {
                     <Label>Service Identity Token</Label>
                     <Input type="password" placeholder={config.masked_service_token || '留空则不覆盖'} value={configDraft.service_token || ''} onChange={(event) => setConfigDraft({ ...configDraft, service_token: event.target.value })} />
                   </div>
-                  <div className="space-y-2">
-                    <Label>JWT 过期时间戳</Label>
-                    <Input value={configDraft.jwt_expires_at || ''} onChange={(event) => setConfigDraft({ ...configDraft, jwt_expires_at: Number(event.target.value) || null })} />
-                  </div>
                 </div>
                 <div className="space-y-3 rounded-md border p-4 text-sm">
                   <div className="flex items-center justify-between">
                     <span className="text-muted-foreground">Token</span>
                     <Badge variant={config.has_service_token ? 'secondary' : 'destructive'}>{config.has_service_token ? '已配置' : '未配置'}</Badge>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">过期时间</span>
-                    <span>{formatTime(config.jwt_expires_at)}</span>
                   </div>
                   <Button className="w-full gap-2" onClick={saveConfig}><Save className="h-4 w-4" />保存配置</Button>
                   <Button className="w-full" variant="outline" onClick={testConnection}>测试连接</Button>

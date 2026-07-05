@@ -155,7 +155,8 @@ describe('AdminPage', () => {
     fireEvent.mouseDown(configTab);
     fireEvent.mouseUp(configTab);
     fireEvent.click(configTab);
-    await screen.findByText('Coze 配置');
+    await screen.findByText('Coze 连接');
+    expect(screen.queryByText('全局主 Bot ID')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '保存配置' }));
 
     await waitFor(() => {
@@ -163,7 +164,10 @@ describe('AdminPage', () => {
         .mocked(lingxiFetch)
         .mock.calls.find(([url, options]) => url === '/api/admin/config' && options?.method === 'PUT');
       expect(configCall).toBeTruthy();
-      expect(JSON.parse(String(configCall?.[1]?.body))).not.toHaveProperty('service_token');
+      const payload = JSON.parse(String(configCall?.[1]?.body));
+      expect(payload).not.toHaveProperty('service_token');
+      expect(payload).not.toHaveProperty('bot_id');
+      expect(payload).not.toHaveProperty('jwt_expires_at');
     });
   });
 });
