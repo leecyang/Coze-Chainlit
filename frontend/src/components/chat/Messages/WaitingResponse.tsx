@@ -1,13 +1,10 @@
 import { MessageAvatar } from './Message/Avatar';
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger
-} from '@/components/ui/accordion';
+import * as AccordionPrimitive from '@radix-ui/react-accordion';
+import { Brain } from 'lucide-react';
+
 import { cn } from '@/lib/utils';
 
-const dotClass = 'h-1.5 w-1.5 rounded-full bg-primary';
+const dotClass = 'h-1 w-1 rounded-full bg-muted-foreground/70';
 
 interface ReasoningPanelProps {
   reasoning?: string;
@@ -41,34 +38,37 @@ export function CozeReasoningPanel({
   }
 
   return (
-    <Accordion
+    <AccordionPrimitive.Root
       type="single"
       collapsible
       className={cn(
-        'w-full rounded-lg border border-border/70 bg-muted/40 px-3',
+        'w-full text-muted-foreground',
         className
       )}
     >
-      <AccordionItem value="coze-reasoning" className="border-none">
-        <AccordionTrigger className="py-2 text-sm text-muted-foreground hover:no-underline">
-          <span className="flex items-center gap-2">
+      <AccordionPrimitive.Item value="coze-reasoning">
+        <AccordionPrimitive.Header className="flex">
+          <AccordionPrimitive.Trigger className="group inline-flex max-w-full items-center gap-1.5 rounded-full px-1.5 py-1 text-xs text-muted-foreground/80 transition-colors hover:bg-muted/30 hover:text-muted-foreground">
+            <Brain className="h-3.5 w-3.5 shrink-0" />
             <span>{isRunning ? '思考中' : '模型思考'}</span>
             {isRunning ? <ThinkingDots /> : null}
-          </span>
-        </AccordionTrigger>
-        <AccordionContent className="pb-3">
+          </AccordionPrimitive.Trigger>
+        </AccordionPrimitive.Header>
+        <AccordionPrimitive.Content className="overflow-hidden data-[state=closed]:animate-accordion-up data-[state=open]:animate-accordion-down">
           {hasReasoning ? (
-            <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md bg-background/70 p-3 text-sm leading-6 text-foreground">
+            <div className="max-h-72 overflow-y-auto pr-1 text-xs leading-5 text-muted-foreground/80 [scrollbar-width:thin]">
+              <p className="whitespace-pre-wrap break-words">
               {reasoning}
-            </pre>
+              </p>
+            </div>
           ) : (
-            <p className="text-sm text-muted-foreground">
+            <p className="text-xs leading-5 text-muted-foreground/80">
               正在等待模型思考输出
             </p>
           )}
-        </AccordionContent>
-      </AccordionItem>
-    </Accordion>
+        </AccordionPrimitive.Content>
+      </AccordionPrimitive.Item>
+    </AccordionPrimitive.Root>
   );
 }
 
@@ -77,7 +77,8 @@ export default function WaitingResponse() {
     <div className="step pt-0 pb-1">
       <div className="ai-message flex w-full gap-4">
         <MessageAvatar />
-        <div className="mt-0.5 flex min-h-9 items-center gap-3 rounded-2xl bg-muted/60 px-4 py-2 text-sm text-muted-foreground">
+        <div className="mt-0.5 inline-flex min-h-8 items-center gap-2 rounded-full bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground">
+          <Brain className="h-3.5 w-3.5" />
           <span>思考中</span>
           <ThinkingDots />
         </div>
