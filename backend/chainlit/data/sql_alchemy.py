@@ -618,11 +618,30 @@ class SQLAlchemyDataLayer(BaseDataLayer):
         if self.show_logger:
             logger.info(f"SQLAlchemy: create_element, element_id = {element.id}")
 
+        element_dict: ElementDict = element.to_dict()
+
         if not self.storage_provider:
-            logger.warning(
-                "SQLAlchemy: create_element error. No blob_storage_client is configured!"
+            element_dict_cleaned = {
+                k: v for k, v in element_dict.items() if v is not None
+            }
+            if "props" in element_dict_cleaned:
+                element_dict_cleaned["props"] = json.dumps(element_dict_cleaned["props"])
+
+            columns = ", ".join(
+                f'"{column}"' for column in element_dict_cleaned.keys()
             )
+            placeholders = ", ".join(
+                f":{column}" for column in element_dict_cleaned.keys()
+            )
+            updates = ", ".join(
+                f'"{column}" = :{column}'
+                for column in element_dict_cleaned.keys()
+                if column != "id"
+            )
+            query = f"INSERT INTO elements ({columns}) VALUES ({placeholders}) ON CONFLICT (id) DO UPDATE SET {updates};"
+            await self.execute_sql(query=query, parameters=element_dict_cleaned)
             return
+
         if not element.for_id:
             return
 
@@ -660,8 +679,6 @@ class SQLAlchemyDataLayer(BaseDataLayer):
             raise ValueError(
                 "SQLAlchemy Error: create_element, Failed to persist data in storage_provider"
             )
-
-        element_dict: ElementDict = element.to_dict()
 
         element_dict["url"] = uploaded_file.get("url")
         element_dict["objectKey"] = uploaded_file.get("object_key")

@@ -1732,32 +1732,54 @@ def validate_file_size(file: UploadFile, spec: Optional[AskFileSpec]):
 @router.get("/project/file/{file_id}")
 async def get_file(
     file_id: str,
-    session_id: str,
     current_user: UserParam,
+    session_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
 ):
     """Get a file from the session files directory."""
     from chainlit.session import WebsocketSession
 
     session = WebsocketSession.get_by_id(session_id) if session_id else None
 
-    if not session:
-        raise HTTPException(
-            status_code=401,
-            detail="Unauthorized",
-        )
-
-    if current_user:
+    if session and current_user:
         if not session.user or session.user.identifier != current_user.identifier:
             raise HTTPException(
                 status_code=401,
                 detail="You are not authorized to download files from this session",
             )
 
-    if file_id in session.files:
+    if session and file_id in session.files:
         file = session.files[file_id]
         return FileResponse(file["path"], media_type=file["type"])
-    else:
-        raise HTTPException(status_code=404, detail="File not found")
+
+    if thread_id:
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        await is_thread_author(current_user.identifier, thread_id)
+
+        data_layer = get_data_layer()
+        thread = await data_layer.get_thread(thread_id) if data_layer else None
+        thread_elements = thread.get("elements") if thread else []
+        if not any(
+            element.get("chainlitKey") == file_id or element.get("id") == file_id
+            for element in (thread_elements or [])
+        ):
+            raise HTTPException(status_code=404, detail="File not found")
+
+        matching_files = [
+            candidate
+            for candidate in FILES_DIRECTORY.glob(f"*/{file_id}*")
+            if candidate.is_file() and candidate.stem == file_id
+        ]
+        if matching_files:
+            media_type = mimetypes.guess_type(str(matching_files[0]))[0]
+            return FileResponse(
+                matching_files[0],
+                media_type=media_type or "application/octet-stream",
+            )
+
+    raise HTTPException(status_code=404, detail="File not found")
 
 
 @router.get("/favicon")

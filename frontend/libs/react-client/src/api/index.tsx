@@ -371,9 +371,12 @@ export class ChainlitAPI extends APIBase {
     return res.json();
   }
 
-  getElementUrl(id: string, sessionId: string) {
-    const queryParams = `?session_id=${sessionId}`;
-    return this.buildEndpoint(`/project/file/${id}${queryParams}`);
+  getElementUrl(id: string, sessionId: string, threadId?: string) {
+    const queryParams = new URLSearchParams({ session_id: sessionId });
+    if (threadId) {
+      queryParams.set('thread_id', threadId);
+    }
+    return this.buildEndpoint(`/project/file/${id}?${queryParams.toString()}`);
   }
 
   getLogoEndpoint(theme: string, configuredLogoUrl?: string) {

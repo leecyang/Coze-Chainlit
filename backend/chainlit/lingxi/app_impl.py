@@ -850,6 +850,15 @@ class CozeAPI:
             {"coze_reasoning_content": reasoning_content},
         )
 
+    async def _stream_follow_ups_metadata(self, msg: cl.Message, follow_ups: List[str]):
+        """Stream Coze follow-up suggestions into the message metadata."""
+        msg.metadata = msg.metadata or {}
+        msg.metadata["coze_follow_ups"] = follow_ups[:3]
+        await context.emitter.stream_metadata(
+            msg.id,
+            {"coze_follow_ups": follow_ups[:3]},
+        )
+
     def _extract_requires_action(self, data: dict) -> dict:
         """从 SSE 事件数据中提取 requires_action 信息
         
@@ -897,6 +906,7 @@ class CozeAPI:
         current_event = None
         current_answer_id = None  # 跟踪当前 answer 消息 ID，用于多 answer 拆分
         reasoning_content = ""
+        follow_ups: List[str] = []
 
         async for line in response.content:
             line = line.decode('utf-8').strip()
@@ -928,11 +938,17 @@ class CozeAPI:
                                 and delta_msg_id != current_answer_id 
                                 and full_content):
                                 # 持久化当前消息，创建新消息
-                                await self._persist_msg(msg, full_content, reasoning_content)
+                                await self._persist_msg(
+                                    msg,
+                                    full_content,
+                                    reasoning_content,
+                                    follow_ups,
+                                )
                                 msg = cl.Message(content="")
                                 await msg.send()
                                 full_content = ""
                                 reasoning_content = ""
+                                follow_ups = []
                             if delta_msg_id:
                                 current_answer_id = delta_msg_id
 
@@ -953,6 +969,11 @@ class CozeAPI:
                             if not full_content and data.get("content"):
                                 full_content = data["content"]
                                 await msg.stream_token(full_content)
+                        elif isinstance(data, dict) and data.get("type") == "follow_up":
+                            suggestion = str(data.get("content") or "").strip()
+                            if suggestion and suggestion not in follow_ups and len(follow_ups) < 3:
+                                follow_ups.append(suggestion)
+                                await self._stream_follow_ups_metadata(msg, follow_ups)
 
                     elif current_event == "conversation.chat.completed":
                         if isinstance(data, dict):
@@ -997,14 +1018,19 @@ class CozeAPI:
         msg: cl.Message,
         full_content: str,
         reasoning_content: Optional[str] = None,
+        follow_ups: Optional[List[str]] = None,
     ):
         """将流式接收到的消息内容持久化到数据库"""
         if reasoning_content:
             msg.metadata = msg.metadata or {}
             msg.metadata["coze_reasoning_content"] = reasoning_content
+        if follow_ups:
+            msg.metadata = msg.metadata or {}
+            msg.metadata["coze_follow_ups"] = follow_ups[:3]
 
         existing_reasoning = (msg.metadata or {}).get("coze_reasoning_content")
-        if full_content or reasoning_content or existing_reasoning:
+        existing_follow_ups = (msg.metadata or {}).get("coze_follow_ups")
+        if full_content or reasoning_content or existing_reasoning or existing_follow_ups:
             if msg.content != full_content:
                 msg.content = full_content
             await msg.update()
@@ -1183,9 +1209,10 @@ class CozeAPI:
         current_event = None
         current_answer_id = None
         reasoning_content = ""
+        follow_ups: List[str] = []
 
         async def process_line(line: str):
-            nonlocal full_content, requires_action_info, current_event, current_answer_id, msg, reasoning_content
+            nonlocal full_content, requires_action_info, current_event, current_answer_id, msg, reasoning_content, follow_ups
 
             if not line:
                 return
@@ -1211,11 +1238,17 @@ class CozeAPI:
                                 and delta_msg_id 
                                 and delta_msg_id != current_answer_id 
                                 and full_content):
-                                await self._persist_msg(msg, full_content, reasoning_content)
+                                await self._persist_msg(
+                                    msg,
+                                    full_content,
+                                    reasoning_content,
+                                    follow_ups,
+                                )
                                 msg = cl.Message(content="")
                                 await msg.send()
                                 full_content = ""
                                 reasoning_content = ""
+                                follow_ups = []
                             if delta_msg_id:
                                 current_answer_id = delta_msg_id
 
@@ -1236,6 +1269,11 @@ class CozeAPI:
                             if not full_content and data.get("content"):
                                 full_content = data["content"]
                                 await msg.stream_token(full_content)
+                        elif isinstance(data, dict) and data.get("type") == "follow_up":
+                            suggestion = str(data.get("content") or "").strip()
+                            if suggestion and suggestion not in follow_ups and len(follow_ups) < 3:
+                                follow_ups.append(suggestion)
+                                await self._stream_follow_ups_metadata(msg, follow_ups)
 
                     elif current_event == "conversation.chat.completed":
                         if isinstance(data, dict):

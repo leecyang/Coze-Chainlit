@@ -341,7 +341,15 @@ const useChatSession = () => {
           setChatSettingsValue(thread.metadata?.chat_settings);
         }
         setMessages(messages);
-        const elements = thread.elements || [];
+        const elements = (thread.elements || []).map((element) => {
+          if (!element.url && element.chainlitKey) {
+            return {
+              ...element,
+              url: client.getElementUrl(element.chainlitKey, sessionId, thread.id)
+            };
+          }
+          return element;
+        });
         setTasklists(
           (elements as ITasklistElement[]).filter((e) => e.type === 'tasklist')
         );

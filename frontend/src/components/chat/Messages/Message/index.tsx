@@ -17,6 +17,7 @@ import { AskFileButton } from './AskFileButton';
 import { MessageAvatar } from './Avatar';
 import { MessageButtons } from './Buttons';
 import { MessageContent } from './Content';
+import FollowUpSuggestions from './FollowUpSuggestions';
 import Step from './Step';
 import UserMessage from './UserMessage';
 
@@ -61,6 +62,12 @@ const Message = memo(
       typeof message.metadata?.coze_reasoning_content === 'string'
         ? message.metadata.coze_reasoning_content
         : '';
+    const rawCozeFollowUps = message.metadata?.coze_follow_ups;
+    const cozeFollowUps = Array.isArray(rawCozeFollowUps)
+      ? rawCozeFollowUps.filter(
+          (suggestion): suggestion is string => typeof suggestion === 'string'
+        )
+      : [];
     const isEmptyRunningStep =
       isStep &&
       isRunning &&
@@ -196,6 +203,7 @@ const Message = memo(
                         latex={latex}
                         renderMarkdown={true}
                       />
+                      <FollowUpSuggestions suggestions={cozeFollowUps} />
 
                       <AskFileButton messageId={message.id} onError={onError} />
                       <AskActionButtons
