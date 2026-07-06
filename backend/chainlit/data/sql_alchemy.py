@@ -87,6 +87,18 @@ class SQLAlchemyDataLayer(BaseDataLayer):
                 "SQLAlchemyDataLayer storage client is not initialized and elements will not be persisted!"
             )
 
+    @staticmethod
+    def _coerce_json_dict(value: Any) -> Dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str) and value:
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
+
     async def build_debug_url(self) -> str:
         return ""
 
@@ -516,11 +528,7 @@ class SQLAlchemyDataLayer(BaseDataLayer):
             streaming=step_feedback.get("step_streaming", False),
             waitForAnswer=step_feedback.get("step_waitforanswer"),
             isError=step_feedback.get("step_iserror"),
-            metadata=(
-                step_feedback["step_metadata"]
-                if step_feedback.get("step_metadata") is not None
-                else {}
-            ),
+            metadata=self._coerce_json_dict(step_feedback.get("step_metadata")),
             tags=step_feedback.get("step_tags"),
             input=(
                 step_feedback.get("step_input", "")
@@ -805,7 +813,7 @@ class SQLAlchemyDataLayer(BaseDataLayer):
                     userId=thread["user_id"],
                     userIdentifier=thread["user_identifier"],
                     tags=thread["thread_tags"],
-                    metadata=thread["thread_metadata"],
+                    metadata=self._coerce_json_dict(thread.get("thread_metadata")),
                     steps=[],
                     elements=[],
                 )
@@ -831,11 +839,7 @@ class SQLAlchemyDataLayer(BaseDataLayer):
                         streaming=step_feedback.get("step_streaming", False),
                         waitForAnswer=step_feedback.get("step_waitforanswer"),
                         isError=step_feedback.get("step_iserror"),
-                        metadata=(
-                            step_feedback["step_metadata"]
-                            if step_feedback.get("step_metadata") is not None
-                            else {}
-                        ),
+                        metadata=self._coerce_json_dict(step_feedback.get("step_metadata")),
                         tags=step_feedback.get("step_tags"),
                         input=(
                             step_feedback.get("step_input", "")
