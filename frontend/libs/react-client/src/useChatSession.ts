@@ -51,13 +51,14 @@ import {
   deleteMessageById,
   stopStreamingMessages,
   updateMessageById,
-  updateMessageContentById
+  updateMessageContentById,
+  updateMessageMetadataById
 } from 'src/utils/message';
 
 import { OutputAudioChunk } from './types/audio';
 
 import { ChainlitContext } from './context';
-import type { IToken } from './useChatData';
+import type { IMetadataUpdate, IToken } from './useChatData';
 
 const useChatSession = () => {
   const client = useContext(ChainlitContext);
@@ -394,6 +395,16 @@ const useChatSession = () => {
           scheduleStreamTokenFlush();
         }
       );
+
+      socket.on('stream_metadata', (update: IMetadataUpdate) => {
+        setMessages((oldMessages) =>
+          updateMessageMetadataById(
+            oldMessages,
+            update.id,
+            update.metadata || {}
+          )
+        );
+      });
 
       socket.on('ask', ({ msg, spec }, callback) => {
         flushStreamTokens();

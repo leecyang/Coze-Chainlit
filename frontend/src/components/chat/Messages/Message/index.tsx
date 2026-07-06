@@ -11,6 +11,7 @@ import {
 import { useLayoutMaxWidth } from 'hooks/useLayoutMaxWidth';
 
 import { Messages } from '..';
+import { CozeReasoningPanel } from '../WaitingResponse';
 import { AskActionButtons } from './AskActionButtons';
 import { AskFileButton } from './AskFileButton';
 import { MessageAvatar } from './Avatar';
@@ -56,6 +57,10 @@ const Message = memo(
     const skip = toolCallSkip || hiddenSkip;
     const showInputSection = Boolean(message.input && message.showInput);
     const shouldRenderOutput = !showInputSection || Boolean(message.output);
+    const cozeReasoning =
+      typeof message.metadata?.coze_reasoning_content === 'string'
+        ? message.metadata.coze_reasoning_content
+        : '';
     const isEmptyRunningStep =
       isStep &&
       isRunning &&
@@ -70,6 +75,7 @@ const Message = memo(
       !message.isError &&
       !message.input &&
       !message.output &&
+      !cozeReasoning &&
       !message.steps?.length;
 
     const userMessageContent = useMemo(
@@ -178,6 +184,10 @@ const Message = memo(
                   ) : (
                     // Display an assistant message
                     <div className="flex flex-col items-start min-w-[150px] flex-grow gap-2">
+                      <CozeReasoningPanel
+                        reasoning={cozeReasoning}
+                        isRunning={Boolean(cozeReasoning) && isRunning}
+                      />
                       <MessageContent
                         ref={contentRef}
                         elements={elements}

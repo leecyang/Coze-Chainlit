@@ -20,6 +20,11 @@ export interface IToken {
   isInput: boolean;
 }
 
+export interface IMetadataUpdate {
+  id: number | string;
+  metadata: Record<string, any>;
+}
+
 const useChatData = () => {
   const loading = useRecoilValue(loadingState);
   const elements = useRecoilValue(elementState);

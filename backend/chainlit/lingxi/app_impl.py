@@ -26,6 +26,7 @@ _load_environment_files()
 
 import chainlit as cl
 from chainlit.server import app
+from chainlit.context import context
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 from chainlit.types import ThreadFilter, Pagination
 from fastapi import HTTPException, Request
@@ -767,6 +768,88 @@ class CozeAPI:
             print(f"[Coze API] Create message exception: {e}")
         return None
 
+    async def upload_file(self, path: str, name: str, mime: Optional[str] = None) -> str:
+        """Upload a Chainlit session file to Coze and return the Coze file id."""
+        url = f"{self.base_url}/v1/files/upload"
+        upload_headers = {
+            "Authorization": f"Bearer {self.auth_token}",
+            "Accept": "application/json",
+        }
+
+        try:
+            with open(path, "rb") as file_obj:
+                form = aiohttp.FormData()
+                form.add_field(
+                    "file",
+                    file_obj,
+                    filename=name,
+                    content_type=mime or "application/octet-stream",
+                )
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, headers=upload_headers, data=form) as response:
+                        response_text = await response.text()
+                        if response.status != 200:
+                            raise RuntimeError(f"Coze 文件上传失败: HTTP {response.status}")
+
+                        data = json.loads(response_text)
+                        if data.get("code") != 0:
+                            raise RuntimeError(
+                                f"Coze 文件上传失败: {data.get('msg') or data.get('code')}"
+                            )
+
+                        file_id = data.get("data", {}).get("id")
+                        if not file_id:
+                            raise RuntimeError("Coze 文件上传失败: 未返回 file_id")
+                        return file_id
+        except FileNotFoundError:
+            raise RuntimeError(f"Coze 文件上传失败: 本地文件不存在 {name}")
+        except json.JSONDecodeError:
+            raise RuntimeError(f"Coze 文件上传失败: 返回内容不是有效 JSON")
+        except aiohttp.ClientError as e:
+            raise RuntimeError(f"Coze 文件上传网络错误: {e}")
+
+    async def _build_user_message(
+        self,
+        query: str,
+        elements: Optional[List[Any]] = None,
+    ) -> Dict[str, Any]:
+        """Build a Coze user message, using object_string when files are attached."""
+        attached_elements = [el for el in (elements or []) if getattr(el, "path", None)]
+        if not attached_elements:
+            return {
+                "role": "user",
+                "content": query,
+                "content_type": "text",
+            }
+
+        content_objects: List[Dict[str, str]] = [
+            {"type": "text", "text": query or ""}
+        ]
+
+        for element in attached_elements:
+            path = str(getattr(element, "path"))
+            name = getattr(element, "name", None) or Path(path).name
+            mime = getattr(element, "mime", None) or "application/octet-stream"
+            file_id = await self.upload_file(path, name, mime)
+            object_type = "image" if str(mime).startswith("image/") else "file"
+            content_objects.append({"type": object_type, "file_id": file_id})
+
+        return {
+            "role": "user",
+            "content": json.dumps(content_objects, ensure_ascii=False),
+            "content_type": "object_string",
+        }
+
+    async def _stream_reasoning_metadata(self, msg: cl.Message, reasoning_content: str):
+        """Stream Coze reasoning content into the message metadata."""
+        msg.metadata = msg.metadata or {}
+        msg.metadata["coze_reasoning_content"] = reasoning_content
+        await context.emitter.stream_metadata(
+            msg.id,
+            {"coze_reasoning_content": reasoning_content},
+        )
+
     def _extract_requires_action(self, data: dict) -> dict:
         """从 SSE 事件数据中提取 requires_action 信息
         
@@ -813,6 +896,7 @@ class CozeAPI:
         requires_action_info = None
         current_event = None
         current_answer_id = None  # 跟踪当前 answer 消息 ID，用于多 answer 拆分
+        reasoning_content = ""
 
         async for line in response.content:
             line = line.decode('utf-8').strip()
@@ -836,7 +920,7 @@ class CozeAPI:
 
                     # ===== 处理各类事件 =====
                     if current_event == "conversation.message.delta":
-                        if isinstance(data, dict) and data.get("content"):
+                        if isinstance(data, dict):
                             delta_msg_id = data.get("id", "")
                             # ★ 多 answer 拆分：检测到新的 answer 消息 ID
                             if (current_answer_id 
@@ -844,18 +928,28 @@ class CozeAPI:
                                 and delta_msg_id != current_answer_id 
                                 and full_content):
                                 # 持久化当前消息，创建新消息
-                                await self._persist_msg(msg, full_content)
+                                await self._persist_msg(msg, full_content, reasoning_content)
                                 msg = cl.Message(content="")
                                 await msg.send()
                                 full_content = ""
+                                reasoning_content = ""
                             if delta_msg_id:
                                 current_answer_id = delta_msg_id
-                            content_delta = data["content"]
-                            full_content += content_delta
-                            await msg.stream_token(content_delta)
+
+                            if data.get("reasoning_content"):
+                                reasoning_content += data["reasoning_content"]
+                                await self._stream_reasoning_metadata(msg, reasoning_content)
+
+                            if data.get("content"):
+                                content_delta = data["content"]
+                                full_content += content_delta
+                                await msg.stream_token(content_delta)
 
                     elif current_event == "conversation.message.completed":
                         if isinstance(data, dict) and data.get("type") == "answer":
+                            if data.get("reasoning_content"):
+                                reasoning_content = data["reasoning_content"]
+                                await self._stream_reasoning_metadata(msg, reasoning_content)
                             if not full_content and data.get("content"):
                                 full_content = data["content"]
                                 await msg.stream_token(full_content)
@@ -898,9 +992,19 @@ class CozeAPI:
 
         return full_content, requires_action_info, msg
 
-    async def _persist_msg(self, msg: cl.Message, full_content: str):
+    async def _persist_msg(
+        self,
+        msg: cl.Message,
+        full_content: str,
+        reasoning_content: Optional[str] = None,
+    ):
         """将流式接收到的消息内容持久化到数据库"""
-        if full_content:
+        if reasoning_content:
+            msg.metadata = msg.metadata or {}
+            msg.metadata["coze_reasoning_content"] = reasoning_content
+
+        existing_reasoning = (msg.metadata or {}).get("coze_reasoning_content")
+        if full_content or reasoning_content or existing_reasoning:
             if msg.content != full_content:
                 msg.content = full_content
             await msg.update()
@@ -928,29 +1032,29 @@ class CozeAPI:
             "target_role": target_role
         }
 
-        payload = {
-            "bot_id": self.bot_id,
-            "user_id": user_id,
-            "additional_messages": [
-                {
-                    "role": "user",
-                    "content": query,
-                    "content_type": "text"
-                }
-            ],
-            "stream": True,
-            "auto_save_history": True,
-            "custom_variables": custom_vars
-        }
-
-        result = {"content": None, "requires_action": None}
+        result = {"content": None, "requires_action": None, "error": None}
 
         try:
+            user_message = await self._build_user_message(
+                query,
+                kwargs.get("files") or [],
+            )
+
+            payload = {
+                "bot_id": self.bot_id,
+                "user_id": user_id,
+                "additional_messages": [user_message],
+                "stream": True,
+                "auto_save_history": True,
+                "custom_variables": custom_vars
+            }
+
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, headers=self.headers, params=params, json=payload) as response:
                     if response.status != 200:
                         error_text = await response.text()
-                        print(f"[Coze] chat_stream HTTP error: {response.status}")
+                        print(f"[Coze] chat_stream HTTP error: {response.status}, {error_text}")
+                        result["error"] = f"Coze 对话请求失败: HTTP {response.status}"
                         return result
 
                     full_content, requires_action_info, msg = await self._process_sse_stream(response, msg)
@@ -958,6 +1062,10 @@ class CozeAPI:
         except asyncio.CancelledError:
             await self._persist_msg(msg, msg.content or "")
             raise
+        except RuntimeError as e:
+            print(f"[Coze] chat_stream preparation error: {e}")
+            result["error"] = str(e)
+            return result
         except aiohttp.ClientError as e:
             print(f"[Coze] chat_stream network error: {e}")
             return result
@@ -1074,9 +1182,10 @@ class CozeAPI:
         requires_action_info = None
         current_event = None
         current_answer_id = None
+        reasoning_content = ""
 
         async def process_line(line: str):
-            nonlocal full_content, requires_action_info, current_event, current_answer_id, msg
+            nonlocal full_content, requires_action_info, current_event, current_answer_id, msg, reasoning_content
 
             if not line:
                 return
@@ -1096,24 +1205,34 @@ class CozeAPI:
                         return
 
                     if current_event == "conversation.message.delta":
-                        if isinstance(data, dict) and data.get("content"):
+                        if isinstance(data, dict):
                             delta_msg_id = data.get("id", "")
                             if (current_answer_id 
                                 and delta_msg_id 
                                 and delta_msg_id != current_answer_id 
                                 and full_content):
-                                await self._persist_msg(msg, full_content)
+                                await self._persist_msg(msg, full_content, reasoning_content)
                                 msg = cl.Message(content="")
                                 await msg.send()
                                 full_content = ""
+                                reasoning_content = ""
                             if delta_msg_id:
                                 current_answer_id = delta_msg_id
-                            content_delta = data["content"]
-                            full_content += content_delta
-                            await msg.stream_token(content_delta)
+
+                            if data.get("reasoning_content"):
+                                reasoning_content += data["reasoning_content"]
+                                await self._stream_reasoning_metadata(msg, reasoning_content)
+
+                            if data.get("content"):
+                                content_delta = data["content"]
+                                full_content += content_delta
+                                await msg.stream_token(content_delta)
 
                     elif current_event == "conversation.message.completed":
                         if isinstance(data, dict) and data.get("type") == "answer":
+                            if data.get("reasoning_content"):
+                                reasoning_content = data["reasoning_content"]
+                                await self._stream_reasoning_metadata(msg, reasoning_content)
                             if not full_content and data.get("content"):
                                 full_content = data["content"]
                                 await msg.stream_token(full_content)
@@ -1394,7 +1513,14 @@ async def on_message(message: cl.Message):
 
         if not pending_chat_id:
             # chat_id 缺失，回退到普通对话
-            result = await coze.chat_stream(conversation_id, username, message.content, msg, target_role=current_target_role)
+            result = await coze.chat_stream(
+                conversation_id,
+                username,
+                message.content,
+                msg,
+                target_role=current_target_role,
+                files=message.elements,
+            )
 
         elif tool_call_type == "reply_message":
             # ★ reply_message 类型：chatflow 问答节点
@@ -1404,7 +1530,12 @@ async def on_message(message: cl.Message):
             # Coze 会自动续接未完成的工作流。
             print(f"[Coze] reply_message: using chat_stream to continue workflow")
             result = await coze.chat_stream(
-                pending_conv_id, username, message.content, msg, target_role=current_target_role
+                pending_conv_id,
+                username,
+                message.content,
+                msg,
+                target_role=current_target_role,
+                files=message.elements,
             )
 
         elif tool_call_id:
@@ -1428,13 +1559,26 @@ async def on_message(message: cl.Message):
             print(f"[Coze] empty tool_call_id for type={tool_call_type}, "
                   f"falling back to chat_stream")
             result = await coze.chat_stream(
-                pending_conv_id, username, message.content, msg, target_role=current_target_role
+                pending_conv_id,
+                username,
+                message.content,
+                msg,
+                target_role=current_target_role,
+                files=message.elements,
             )
     else:
         # ========== 普通模式：发起新的对话 ==========
-        result = await coze.chat_stream(conversation_id, username, message.content, msg, target_role=current_target_role)
+        result = await coze.chat_stream(
+            conversation_id,
+            username,
+            message.content,
+            msg,
+            target_role=current_target_role,
+            files=message.elements,
+        )
 
     # 统一处理结果
+    response_error = result.get("error") if isinstance(result, dict) else None
     response_content = result.get("content") if isinstance(result, dict) else result
     requires_action = result.get("requires_action") if isinstance(result, dict) else None
 
@@ -1447,7 +1591,7 @@ async def on_message(message: cl.Message):
 
     if not response_content:
         # 只有在没有收到响应时才需要处理错误
-        error_msg = "抱歉，我没有收到有效的回复。请检查 Coze API Key 和 Bot ID 配置是否正确。"
+        error_msg = response_error or "抱歉，我没有收到有效的回复。请检查 Coze API Key 和 Bot ID 配置是否正确。"
         await msg.stream_token(error_msg)
         msg.content = error_msg
         # 错误情况下需要调用 update() 来持久化错误消息

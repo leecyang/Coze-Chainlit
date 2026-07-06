@@ -233,6 +233,33 @@ const updateMessageContentById = (
   return hasChanges ? nextMessages : messages;
 };
 
+const updateMessageMetadataById = (
+  messages: IStep[],
+  messageId: number | string,
+  metadata: Record<string, any>
+): IStep[] => {
+  let hasChanges = false;
+  const nextMessages = messages.map((msg) => {
+    if (isEqual(msg.id, messageId)) {
+      hasChanges = true;
+      return { ...msg, metadata: { ...(msg.metadata || {}), ...metadata } };
+    } else if (msg.steps) {
+      const updatedSteps = updateMessageMetadataById(
+        msg.steps,
+        messageId,
+        metadata
+      );
+      if (updatedSteps !== msg.steps) {
+        hasChanges = true;
+        return { ...msg, steps: updatedSteps };
+      }
+    }
+    return msg;
+  });
+
+  return hasChanges ? nextMessages : messages;
+};
+
 const stopStreamingMessages = (messages: IStep[]): IStep[] => {
   let hasChanges = false;
 
@@ -267,5 +294,6 @@ export {
   nestMessages,
   stopStreamingMessages,
   updateMessageById,
+  updateMessageMetadataById,
   updateMessageContentById
 };

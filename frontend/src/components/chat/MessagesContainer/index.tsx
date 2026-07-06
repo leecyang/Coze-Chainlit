@@ -167,8 +167,8 @@ const MessagesContainer = ({ navigate }: Props) => {
       steps.some(
         (step) =>
           (step.type === 'assistant_message' &&
-            step.streaming &&
-            Boolean(step.output)) ||
+            ((step.streaming && Boolean(step.output)) ||
+              Boolean(step.metadata?.coze_reasoning_content))) ||
           containsStreamingAssistantOutput(step.steps || [])
       );
 

@@ -135,6 +135,10 @@ class BaseChainlitEmitter:
         """Stub method to send a message token to the UI."""
         pass
 
+    async def stream_metadata(self, id: str, metadata: Dict[str, Any]):
+        """Stub method to stream metadata updates to the UI."""
+        pass
+
     async def set_chat_settings(self, settings: dict):
         """Stub method to set chat settings."""
         pass
@@ -435,6 +439,13 @@ class ChainlitEmitter(BaseChainlitEmitter):
         return self.emit(
             "stream_token",
             {"id": id, "token": token, "isSequence": is_sequence, "isInput": is_input},
+        )
+
+    def stream_metadata(self, id: str, metadata: Dict[str, Any]):
+        """Send a metadata update to the UI without rewriting message content."""
+        return self.emit(
+            "stream_metadata",
+            {"id": id, "metadata": metadata},
         )
 
     def set_chat_settings(self, settings: Dict[str, Any]):
